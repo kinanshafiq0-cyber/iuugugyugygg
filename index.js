@@ -1,198 +1,164 @@
 const { Client, GatewayIntentBits, Partials, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AuditLogEvent, Collection } = require('discord.js');
-const fs = require('fs');
-const sqlite3 = require('sqlite3').verbose();
+const { MongoClient } = require('mongodb');
 
 const TOKEN = process.env.DISCORD_TOKEN || 'ضع_التوكن_هنا';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017';
 
-// ------------------ قاعدة البيانات ------------------
-const db = new sqlite3.Database('./data.db');
+// ------------------ MongoDB ------------------
+let db;
+let settingsCollection, punishmentsCollection, warnsCollection, logsCollection, exemptRolesCollection;
 
-// إنشاء الجداول
-db.serialize(() => {
-    // جدول الإعدادات العامة
-    db.run(`CREATE TABLE IF NOT EXISTS settings (
-        guild_id TEXT PRIMARY KEY,
-        config TEXT
-    )`);
+async function connectDB() {
+    const client = new MongoClient(MONGO_URI);
+    await client.connect();
+    db = client.db('protection_bot');
+    settingsCollection = db.collection('settings');
+    punishmentsCollection = db.collection('punishments');
+    warnsCollection = db.collection('warns');
+    logsCollection = db.collection('logs');
+    exemptRolesCollection = db.collection('exempt_roles');
     
-    // جدول العقوبات المخصصة لكل فعل
-    db.run(`CREATE TABLE IF NOT EXISTS punishments (
-        guild_id TEXT,
-        action TEXT,  -- spam, links, invite, toxic, caps, massmention, flood, ghost, raid, alt, webhook, nick, channel_create, channel_delete, role_create, role_delete, ban, kick, emoji_create, emoji_delete
-        punishment_type TEXT,  -- تحذير, كتم, طرد, حظر, إزالة رتب, توقيت
-        duration INTEGER,  -- بالثواني (للأوامر التي تحتاج مدة)
-        threshold INTEGER,  -- عدد التكرارات قبل تنفيذ العقوبة (للسبام والفلود مثلاً)
-        enabled INTEGER DEFAULT 1,
-        PRIMARY KEY (guild_id, action)
-    )`);
+    await settingsCollection.createIndex({ guild_id: 1 }, { unique: true });
+    await punishmentsCollection.createIndex({ guild_id: 1, action: 1 }, { unique: true });
+    await warnsCollection.createIndex({ guild_id: 1, user_id: 1 }, { unique: true });
+    await logsCollection.createIndex({ guild_id: 1, time: -1 });
+    await exemptRolesCollection.createIndex({ guild_id: 1, role_id: 1 }, { unique: true });
     
-    // جدول التحذيرات
-    db.run(`CREATE TABLE IF NOT EXISTS warns (
-        guild_id TEXT,
-        user_id TEXT,
-        count INTEGER DEFAULT 0,
-        PRIMARY KEY (guild_id, user_id)
-    )`);
-    
-    // جدول السجل
-    db.run(`CREATE TABLE IF NOT EXISTS logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id TEXT,
-        time INTEGER,
-        type TEXT,
-        user_id TEXT,
-        target_id TEXT,
-        detail TEXT
-    )`);
-    
-    // جدول رتب الاستثناء
-    db.run(`CREATE TABLE IF NOT EXISTS exempt_roles (
-        guild_id TEXT,
-        role_id TEXT,
-        PRIMARY KEY (guild_id, role_id)
-    )`);
-});
+    console.log('✅ تم الاتصال بـ MongoDB');
+}
 
-// دوال قاعدة البيانات
-function getSettings(guildId) {
-    return new Promise((resolve) => {
-        db.get('SELECT config FROM settings WHERE guild_id = ?', [guildId], (err, row) => {
-            if (err || !row) {
-                // إعدادات افتراضية
-                const defaultConfig = {
-                    protection: {
-                        anti_raid: false, anti_spam: false, anti_links: false, anti_bots: false,
-                        anti_selfbot: false, anti_webhook: false, anti_nick: false, anti_channel_delete: false,
-                        anti_channel_create: false, anti_role_delete: false, anti_role_create: false,
-                        anti_ban: false, anti_kick: false, anti_prune: false, anti_emoji_delete: false,
-                        anti_emoji_create: false, anti_sticker_delete: false, anti_sticker_create: false,
-                        anti_integration: false, anti_vanity: false, anti_alts: false, anti_toxic: false,
-                        anti_capslock: false, anti_massmention: false, anti_flood: false, anti_invite: false,
-                        anti_ghostping: false, anti_massban: false, anti_masskick: false, permission_guard: false
-                    }
-                };
-                resolve(defaultConfig);
-            } else {
-                resolve(JSON.parse(row.config));
-            }
-        });
+// ------------------ دوال قاعدة البيانات ------------------
+async function getSettings(guildId) {
+    const doc = await settingsCollection.findOne({ guild_id: guildId });
+    if (!doc) {
+        const defaultConfig = {
+            guild_id: guildId,
+            protection: {
+                anti_raid: false, anti_spam: false, anti_links: false, anti_bots: false,
+                anti_selfbot: false, anti_webhook: false, anti_nick: false, anti_channel_delete: false,
+                anti_channel_create: false, anti_role_delete: false, anti_role_create: false,
+                anti_ban: false, anti_kick: false, anti_prune: false, anti_emoji_delete: false,
+                anti_emoji_create: false, anti_sticker_delete: false, anti_sticker_create: false,
+                anti_integration: false, anti_vanity: false, anti_alts: false, anti_toxic: false,
+                anti_capslock: false, anti_massmention: false, anti_flood: false, anti_invite: false,
+                anti_ghostping: false, anti_massban: false, anti_masskick: false, permission_guard: false
+            },
+            warn_threshold: 3
+        };
+        await settingsCollection.insertOne(defaultConfig);
+        return defaultConfig;
+    }
+    return doc;
+}
+
+async function saveSettings(guildId, config) {
+    await settingsCollection.updateOne(
+        { guild_id: guildId },
+        { $set: config },
+        { upsert: true }
+    );
+}
+
+async function getPunishment(guildId, action) {
+    const doc = await punishmentsCollection.findOne({ guild_id: guildId, action: action });
+    if (!doc) {
+        const defaults = {
+            spam: { punishment_type: 'كتم', duration: 300, threshold: 5, enabled: true },
+            flood: { punishment_type: 'توقيت', duration: 60, threshold: 10, enabled: true },
+            links: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
+            invite: { punishment_type: 'طرد', duration: 0, threshold: 1, enabled: true },
+            toxic: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
+            caps: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
+            massmention: { punishment_type: 'كتم', duration: 600, threshold: 3, enabled: true },
+            ghost: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
+            raid: { punishment_type: 'حظر', duration: 0, threshold: 5, enabled: true },
+            alt: { punishment_type: 'طرد', duration: 0, threshold: 1, enabled: true },
+            webhook: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
+            nick: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
+            channel_create: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
+            channel_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
+            role_create: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
+            role_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
+            ban: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
+            kick: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
+            emoji_create: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
+            emoji_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
+            massban: { punishment_type: 'حظر', duration: 0, threshold: 3, enabled: true },
+            masskick: { punishment_type: 'حظر', duration: 0, threshold: 3, enabled: true },
+            permission_guard: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true }
+        };
+        const def = defaults[action] || { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true };
+        const newDoc = { guild_id: guildId, action: action, ...def };
+        await punishmentsCollection.insertOne(newDoc);
+        return newDoc;
+    }
+    return doc;
+}
+
+async function savePunishment(guildId, action, data) {
+    await punishmentsCollection.updateOne(
+        { guild_id: guildId, action: action },
+        { $set: { ...data, guild_id: guildId, action: action } },
+        { upsert: true }
+    );
+}
+
+async function getWarns(guildId, userId) {
+    const doc = await warnsCollection.findOne({ guild_id: guildId, user_id: userId });
+    return doc ? doc.count : 0;
+}
+
+async function setWarns(guildId, userId, count) {
+    await warnsCollection.updateOne(
+        { guild_id: guildId, user_id: userId },
+        { $set: { count: count } },
+        { upsert: true }
+    );
+}
+
+async function addWarn(guildId, userId) {
+    const current = await getWarns(guildId, userId);
+    await setWarns(guildId, userId, current + 1);
+    return current + 1;
+}
+
+async function resetWarns(guildId) {
+    await warnsCollection.deleteMany({ guild_id: guildId });
+}
+
+async function addLog(guildId, type, userId, targetId, detail) {
+    await logsCollection.insertOne({
+        guild_id: guildId,
+        time: Date.now(),
+        type: type,
+        user_id: userId,
+        target_id: targetId,
+        detail: detail
     });
 }
 
-function saveSettings(guildId, config) {
-    return new Promise((resolve) => {
-        db.run('INSERT OR REPLACE INTO settings (guild_id, config) VALUES (?, ?)', [guildId, JSON.stringify(config)], resolve);
-    });
+async function getLogs(guildId, limit = 50) {
+    return await logsCollection.find({ guild_id: guildId })
+        .sort({ time: -1 })
+        .limit(limit)
+        .toArray();
 }
 
-function getPunishment(guildId, action) {
-    return new Promise((resolve) => {
-        db.get('SELECT * FROM punishments WHERE guild_id = ? AND action = ?', [guildId, action], (err, row) => {
-            if (err || !row) {
-                // عقوبات افتراضية لكل فعل
-                const defaults = {
-                    spam: { punishment_type: 'كتم', duration: 300, threshold: 5, enabled: 1 },
-                    flood: { punishment_type: 'توقيت', duration: 60, threshold: 10, enabled: 1 },
-                    links: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
-                    invite: { punishment_type: 'طرد', duration: 0, threshold: 1, enabled: 1 },
-                    toxic: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
-                    caps: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
-                    massmention: { punishment_type: 'كتم', duration: 600, threshold: 3, enabled: 1 },
-                    ghost: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
-                    raid: { punishment_type: 'حظر', duration: 0, threshold: 5, enabled: 1 },
-                    alt: { punishment_type: 'طرد', duration: 0, threshold: 1, enabled: 1 },
-                    webhook: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
-                    nick: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
-                    channel_create: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
-                    channel_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
-                    role_create: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
-                    role_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
-                    ban: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
-                    kick: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
-                    emoji_create: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
-                    emoji_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
-                    massban: { punishment_type: 'حظر', duration: 0, threshold: 3, enabled: 1 },
-                    masskick: { punishment_type: 'حظر', duration: 0, threshold: 3, enabled: 1 },
-                    permission_guard: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 }
-                };
-                const def = defaults[action] || { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 };
-                resolve(def);
-            } else {
-                resolve(row);
-            }
-        });
-    });
+async function getExemptRoles(guildId) {
+    const docs = await exemptRolesCollection.find({ guild_id: guildId }).toArray();
+    return docs.map(d => d.role_id);
 }
 
-function savePunishment(guildId, action, data) {
-    return new Promise((resolve) => {
-        db.run(`INSERT OR REPLACE INTO punishments (guild_id, action, punishment_type, duration, threshold, enabled)
-                VALUES (?, ?, ?, ?, ?, ?)`,
-            [guildId, action, data.punishment_type, data.duration || 0, data.threshold || 1, data.enabled ? 1 : 0],
-            resolve
-        );
-    });
+async function addExemptRole(guildId, roleId) {
+    await exemptRolesCollection.updateOne(
+        { guild_id: guildId, role_id: roleId },
+        { $set: { guild_id: guildId, role_id: roleId } },
+        { upsert: true }
+    );
 }
 
-function getWarns(guildId, userId) {
-    return new Promise((resolve) => {
-        db.get('SELECT count FROM warns WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
-            resolve(row ? row.count : 0);
-        });
-    });
-}
-
-function setWarns(guildId, userId, count) {
-    return new Promise((resolve) => {
-        db.run('INSERT OR REPLACE INTO warns (guild_id, user_id, count) VALUES (?, ?, ?)', [guildId, userId, count], resolve);
-    });
-}
-
-function addWarn(guildId, userId) {
-    return new Promise(async (resolve) => {
-        const current = await getWarns(guildId, userId);
-        await setWarns(guildId, userId, current + 1);
-        resolve(current + 1);
-    });
-}
-
-function resetWarns(guildId) {
-    return new Promise((resolve) => {
-        db.run('DELETE FROM warns WHERE guild_id = ?', [guildId], resolve);
-    });
-}
-
-function addLog(guildId, type, userId, targetId, detail) {
-    db.run('INSERT INTO logs (guild_id, time, type, user_id, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)',
-        [guildId, Date.now(), type, userId, targetId, detail]);
-}
-
-function getLogs(guildId, limit = 50) {
-    return new Promise((resolve) => {
-        db.all('SELECT * FROM logs WHERE guild_id = ? ORDER BY time DESC LIMIT ?', [guildId, limit], (err, rows) => {
-            resolve(rows || []);
-        });
-    });
-}
-
-function getExemptRoles(guildId) {
-    return new Promise((resolve) => {
-        db.all('SELECT role_id FROM exempt_roles WHERE guild_id = ?', [guildId], (err, rows) => {
-            resolve(rows ? rows.map(r => r.role_id) : []);
-        });
-    });
-}
-
-function addExemptRole(guildId, roleId) {
-    return new Promise((resolve) => {
-        db.run('INSERT OR REPLACE INTO exempt_roles (guild_id, role_id) VALUES (?, ?)', [guildId, roleId], resolve);
-    });
-}
-
-function removeExemptRole(guildId, roleId) {
-    return new Promise((resolve) => {
-        db.run('DELETE FROM exempt_roles WHERE guild_id = ? AND role_id = ?', [guildId, roleId], resolve);
-    });
+async function removeExemptRole(guildId, roleId) {
+    await exemptRolesCollection.deleteOne({ guild_id: guildId, role_id: roleId });
 }
 
 // ------------------ العميل ------------------
@@ -217,7 +183,6 @@ const mentionTracker = new Collection();
 const ghostTracker = new Collection();
 const joinTimes = new Collection();
 
-// دوال مساعدة
 async function isExempt(guildId, member) {
     if (!member) return false;
     const exemptRoles = await getExemptRoles(guildId);
@@ -238,21 +203,19 @@ async function applyPunishment(guild, user, action, punishmentData) {
         switch (p.punishment_type) {
             case 'تحذير':
                 const warns = await addWarn(guild.id, user.id);
-                // التحقق من حد التحذير (من الإعدادات العامة)
                 const settings = await getSettings(guild.id);
                 const warnThreshold = settings.warn_threshold || 3;
                 if (warns >= warnThreshold) {
-                    // تطبيق العقوبة التالية (كتم)
-                    const mutePun = await getPunishment(guild.id, 'spam'); // افتراضي
+                    const mutePun = await getPunishment(guild.id, 'spam');
                     await member.timeout((mutePun.duration || 300) * 1000, 'تجاوز حد التحذيرات').catch(() => {});
-                    result = `⚠️ تحذير ${warns}/${warnThreshold} → تم تطبيق كتم تلقائي`;
+                    result = `⚠️ تحذير ${warns}/${warnThreshold} → كتم تلقائي`;
                 } else {
                     result = `⚠️ تحذير ${warns}/${warnThreshold}`;
                 }
                 break;
             case 'كتم':
-                await member.timeout((p.duration || 300) * 1000, `كتم تلقائي: ${p.duration} ثانية`).catch(() => {});
-                result = `🔇 كتم ${p.duration} ثانية`;
+                await member.timeout((p.duration || 300) * 1000, `كتم تلقائي: ${p.duration}ث`).catch(() => {});
+                result = `🔇 كتم ${p.duration}ث`;
                 break;
             case 'طرد':
                 await member.kick('طرد تلقائي').catch(() => {});
@@ -268,13 +231,13 @@ async function applyPunishment(guild, user, action, punishmentData) {
                 result = '🎭 إزالة جميع الرتب';
                 break;
             case 'توقيت':
-                await member.timeout((p.duration || 60) * 1000, `توقيت مؤقت: ${p.duration} ثانية`).catch(() => {});
-                result = `⏱️ توقيت ${p.duration} ثانية`;
+                await member.timeout((p.duration || 60) * 1000, `توقيت: ${p.duration}ث`).catch(() => {});
+                result = `⏱️ توقيت ${p.duration}ث`;
                 break;
             default:
                 result = '⚠️ عقوبة غير معروفة';
         }
-        addLog(guild.id, 'عقوبة', client.user.id, user.id, `${action} → ${result}`);
+        await addLog(guild.id, 'عقوبة', client.user.id, user.id, `${action} → ${result}`);
         return result;
     } catch (e) {
         console.error('خطأ في العقوبة:', e);
@@ -286,7 +249,7 @@ client.once('ready', () => {
     client.user.setActivity('!اللوحة | /اللوحة', { type: 3 });
 });
 
-// ------------------ لوحة التحكم ------------------
+// ------------------ لوحة التحكم (معدلة لتجنب الأخطاء) ------------------
 async function sendMainPanel(message) {
     const embed = new EmbedBuilder()
         .setTitle('🛡️ لوحة التحكم الشاملة')
@@ -317,7 +280,7 @@ async function sendMainPanel(message) {
 async function sendProtectionPanel(message, page = 0) {
     const settings = await getSettings(message.guild.id);
     const protectionKeys = Object.keys(settings.protection);
-    const itemsPerPage = 25;
+    const itemsPerPage = 20;
     const totalPages = Math.ceil(protectionKeys.length / itemsPerPage);
     if (page >= totalPages) page = 0;
     
@@ -365,7 +328,7 @@ async function sendProtectionPanel(message, page = 0) {
             .setEmoji(settings.protection[key] ? '✅' : '❌');
         currentRow.addComponents(button);
         count++;
-        if (count % 5 === 0) {
+        if (count % 4 === 0) {
             rows.push(currentRow);
             currentRow = new ActionRowBuilder();
         }
@@ -436,7 +399,7 @@ async function sendExemptPanel(message) {
     await message.reply({ embeds: [embed], components: [row1, row2] });
 }
 
-async function sendPunishmentsPanel(message) {
+async function sendPunishmentsPanel(message, page = 0) {
     const actions = [
         'spam', 'flood', 'links', 'invite', 'toxic', 'caps', 'massmention', 'ghost',
         'raid', 'alt', 'webhook', 'nick', 'channel_create', 'channel_delete',
@@ -444,15 +407,22 @@ async function sendPunishmentsPanel(message) {
         'massban', 'masskick', 'permission_guard'
     ];
     
+    const itemsPerPage = 10;
+    const totalPages = Math.ceil(actions.length / itemsPerPage);
+    if (page >= totalPages) page = 0;
+    const start = page * itemsPerPage;
+    const end = Math.min(start + itemsPerPage, actions.length);
+    const currentActions = actions.slice(start, end);
+    
     const embed = new EmbedBuilder()
         .setTitle('⚖️ العقوبات المخصصة لكل فعل')
-        .setDescription('اضغط على زر الفعل لتعديل عقوبته.\nالترتيب: العقوبة | المدة (ث) | الحد')
+        .setDescription(`اختر زر الفعل لتعديل عقوبته.\n📄 صفحة ${page + 1} من ${totalPages}`)
         .setColor('#2b2d42')
         .setFooter({ text: '🔙 للعودة للقائمة الرئيسية' })
         .setTimestamp();
 
     let list = '';
-    for (const action of actions) {
+    for (const action of currentActions) {
         const p = await getPunishment(message.guild.id, action);
         const status = p.enabled ? '✅' : '❌';
         const type = p.punishment_type || 'تحذير';
@@ -465,7 +435,7 @@ async function sendPunishmentsPanel(message) {
     const rows = [];
     let currentRow = new ActionRowBuilder();
     let count = 0;
-    for (const action of actions) {
+    for (const action of currentActions) {
         const label = action.length > 18 ? action.substring(0, 16) + '..' : action;
         const button = new ButtonBuilder()
             .setCustomId(`punish_edit_${action}`)
@@ -479,14 +449,36 @@ async function sendPunishmentsPanel(message) {
         }
     }
     if (currentRow.components.length > 0) rows.push(currentRow);
-    
-    const backRow = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder().setCustomId('menu_back').setLabel('🔙 العودة للقائمة').setStyle(ButtonStyle.Secondary)
-        );
-    rows.push(backRow);
 
-    await message.reply({ embeds: [embed], components: rows });
+    const navRow = new ActionRowBuilder();
+    if (page > 0) {
+        navRow.addComponents(
+            new ButtonBuilder().setCustomId(`punish_page_${page - 1}`).setLabel('◀ السابق').setStyle(ButtonStyle.Primary)
+        );
+    }
+    if (page < totalPages - 1) {
+        navRow.addComponents(
+            new ButtonBuilder().setCustomId(`punish_page_${page + 1}`).setLabel('التالي ▶').setStyle(ButtonStyle.Primary)
+        );
+    }
+    navRow.addComponents(
+        new ButtonBuilder().setCustomId('menu_back').setLabel('🔙 القائمة الرئيسية').setStyle(ButtonStyle.Secondary)
+    );
+
+    const finalRows = [];
+    let totalRows = 0;
+    for (const row of rows) {
+        if (totalRows < 4) {
+            finalRows.push(row);
+            totalRows++;
+        }
+    }
+    if (navRow.components.length > 0 && totalRows < 5) {
+        finalRows.push(navRow);
+        totalRows++;
+    }
+
+    await message.reply({ embeds: [embed], components: finalRows });
 }
 
 async function sendEditPunishmentPanel(message, action) {
@@ -524,219 +516,240 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) return;
     if (!interaction.guild) return;
 
-    const customId = interaction.customId;
-    const guildId = interaction.guild.id;
+    // تجنب خطأ Unknown interaction
+    if (!interaction.isRepliable()) return;
+    
+    try {
+        const customId = interaction.customId;
+        const guildId = interaction.guild.id;
 
-    // القائمة الرئيسية
-    if (customId === 'menu_protection') {
-        await interaction.deferUpdate();
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendProtectionPanel(fakeMessage, 0);
-        return;
-    }
-    if (customId === 'menu_exempt') {
-        await interaction.deferUpdate();
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendExemptPanel(fakeMessage);
-        return;
-    }
-    if (customId === 'menu_punishments') {
-        await interaction.deferUpdate();
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendPunishmentsPanel(fakeMessage);
-        return;
-    }
-    if (customId === 'menu_logs') {
-        const logs = await getLogs(guildId, 30);
-        const logText = logs.length > 0 ? logs.map(l => `${new Date(l.time).toLocaleString('ar-EG')} | ${l.type} | ${l.detail}`).join('\n') : '📭 لا توجد أحداث';
-        const embed = new EmbedBuilder().setTitle('📋 سجل الأحداث').setDescription(`\`\`\`${logText}\`\`\``).setColor('#5865F2');
-        await interaction.reply({ embeds: [embed], ephemeral: true });
-        return;
-    }
-    if (customId === 'menu_reset_warns') {
-        await resetWarns(guildId);
-        await interaction.reply({ content: '✅ تم إعادة تعيين جميع التحذيرات.', ephemeral: true });
-        return;
-    }
-    if (customId === 'menu_back') {
-        await interaction.deferUpdate();
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendMainPanel(fakeMessage);
-        return;
-    }
-    if (customId === 'punish_back') {
-        await interaction.deferUpdate();
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendPunishmentsPanel(fakeMessage);
-        return;
-    }
-
-    // التنقل بين صفحات الحماية
-    if (customId.startsWith('protect_page_')) {
-        const page = parseInt(customId.split('_')[2]);
-        await interaction.deferUpdate();
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendProtectionPanel(fakeMessage, page);
-        return;
-    }
-
-    // تفعيل/إطفاء الحماية
-    if (customId.startsWith('protect_')) {
-        const key = customId.replace('protect_', '');
-        const settings = await getSettings(guildId);
-        if (settings.protection.hasOwnProperty(key)) {
-            settings.protection[key] = !settings.protection[key];
-            await saveSettings(guildId, settings);
-            await interaction.deferUpdate();
-            const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        // القائمة الرئيسية
+        if (customId === 'menu_protection') {
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
             await sendProtectionPanel(fakeMessage, 0);
+            return;
         }
-        return;
-    }
+        if (customId === 'menu_exempt') {
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendExemptPanel(fakeMessage);
+            return;
+        }
+        if (customId === 'menu_punishments') {
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendPunishmentsPanel(fakeMessage, 0);
+            return;
+        }
+        if (customId === 'menu_logs') {
+            const logs = await getLogs(guildId, 30);
+            const logText = logs.length > 0 ? logs.map(l => `${new Date(l.time).toLocaleString('ar-EG')} | ${l.type} | ${l.detail}`).join('\n') : '📭 لا توجد أحداث';
+            const embed = new EmbedBuilder().setTitle('📋 سجل الأحداث').setDescription(`\`\`\`${logText}\`\`\``).setColor('#5865F2');
+            await interaction.reply({ embeds: [embed], ephemeral: true });
+            return;
+        }
+        if (customId === 'menu_reset_warns') {
+            await resetWarns(guildId);
+            await interaction.reply({ content: '✅ تم إعادة تعيين جميع التحذيرات.', ephemeral: true });
+            return;
+        }
+        if (customId === 'menu_back') {
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendMainPanel(fakeMessage);
+            return;
+        }
+        if (customId === 'punish_back') {
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendPunishmentsPanel(fakeMessage, 0);
+            return;
+        }
 
-    // إدارة رتب الاستثناء
-    if (customId === 'exempt_add') {
-        await interaction.reply({ content: '📝 **أرسل معرف الرتبة (ID) التي تريد إضافتها للاستثناء.**\nمثال: `123456789012345678`', ephemeral: true });
-        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
-        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
-        if (collected.size === 0) {
-            await interaction.followUp({ content: '⏰ انتهى الوقت، حاول مرة أخرى.', ephemeral: true });
+        // التنقل بين صفحات الحماية
+        if (customId.startsWith('protect_page_')) {
+            const page = parseInt(customId.split('_')[2]);
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendProtectionPanel(fakeMessage, page);
             return;
         }
-        const msg = collected.first();
-        const roleId = msg.content.trim();
-        const role = interaction.guild.roles.cache.get(roleId);
-        if (!role) {
-            await interaction.followUp({ content: '❌ معرف الرتبة غير صحيح، تأكد من الرقم.', ephemeral: true });
-            return;
-        }
-        await addExemptRole(guildId, roleId);
-        await interaction.followUp({ content: `✅ تم إضافة الرتبة **@${role.name}** إلى قائمة الاستثناء.`, ephemeral: true });
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendExemptPanel(fakeMessage);
-        return;
-    }
 
-    if (customId === 'exempt_remove') {
-        const exemptRoles = await getExemptRoles(guildId);
-        if (exemptRoles.length === 0) {
-            await interaction.reply({ content: '📭 لا توجد رتب مستثناة لحذفها.', ephemeral: true });
+        // التنقل بين صفحات العقوبات
+        if (customId.startsWith('punish_page_')) {
+            const page = parseInt(customId.split('_')[2]);
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendPunishmentsPanel(fakeMessage, page);
             return;
         }
-        const list = exemptRoles.map((id, i) => {
-            const role = interaction.guild.roles.cache.get(id);
-            return `${i + 1}. ${role ? `@${role.name}` : `❌ معرف غير موجود: ${id}`}`;
-        }).join('\n');
-        await interaction.reply({ content: `📝 **اختر رقم الرتبة لحذفها:**\n${list}\nأرسل الرقم (مثال: 1)`, ephemeral: true });
-        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
-        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
-        if (collected.size === 0) {
-            await interaction.followUp({ content: '⏰ انتهى الوقت، حاول مرة أخرى.', ephemeral: true });
-            return;
-        }
-        const msg = collected.first();
-        const index = parseInt(msg.content.trim()) - 1;
-        if (isNaN(index) || index < 0 || index >= exemptRoles.length) {
-            await interaction.followUp({ content: '❌ رقم غير صحيح.', ephemeral: true });
-            return;
-        }
-        const removedId = exemptRoles[index];
-        await removeExemptRole(guildId, removedId);
-        const role = interaction.guild.roles.cache.get(removedId);
-        await interaction.followUp({ content: `✅ تم حذف الرتبة ${role ? `@${role.name}` : removedId} من قائمة الاستثناء.`, ephemeral: true });
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendExemptPanel(fakeMessage);
-        return;
-    }
 
-    // تعديل العقوبات
-    if (customId.startsWith('punish_edit_')) {
-        const action = customId.replace('punish_edit_', '');
-        await interaction.deferUpdate();
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendEditPunishmentPanel(fakeMessage, action);
-        return;
-    }
+        // تفعيل/إطفاء الحماية
+        if (customId.startsWith('protect_')) {
+            const key = customId.replace('protect_', '');
+            const settings = await getSettings(guildId);
+            if (settings.protection.hasOwnProperty(key)) {
+                settings.protection[key] = !settings.protection[key];
+                await saveSettings(guildId, settings);
+                await interaction.deferUpdate().catch(() => {});
+                const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+                await sendProtectionPanel(fakeMessage, 0);
+            }
+            return;
+        }
 
-    if (customId.startsWith('edit_type_')) {
-        const action = customId.replace('edit_type_', '');
-        const types = ['تحذير', 'كتم', 'طرد', 'حظر', 'إزالة رتب', 'توقيت'];
-        await interaction.reply({ content: `📝 **اختر نوع العقوبة الجديد لـ ${action}:**\n${types.map((t, i) => `${i+1}. ${t}`).join('\n')}\nأرسل الرقم (مثال: 1)`, ephemeral: true });
-        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
-        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
-        if (collected.size === 0) {
-            await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+        // إدارة رتب الاستثناء
+        if (customId === 'exempt_add') {
+            await interaction.reply({ content: '📝 **أرسل معرف الرتبة (ID) التي تريد إضافتها للاستثناء.**\nمثال: `123456789012345678`', ephemeral: true });
+            const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+            if (collected.size === 0) {
+                await interaction.followUp({ content: '⏰ انتهى الوقت، حاول مرة أخرى.', ephemeral: true });
+                return;
+            }
+            const msg = collected.first();
+            const roleId = msg.content.trim();
+            const role = interaction.guild.roles.cache.get(roleId);
+            if (!role) {
+                await interaction.followUp({ content: '❌ معرف الرتبة غير صحيح، تأكد من الرقم.', ephemeral: true });
+                return;
+            }
+            await addExemptRole(guildId, roleId);
+            await interaction.followUp({ content: `✅ تم إضافة الرتبة **@${role.name}** إلى قائمة الاستثناء.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendExemptPanel(fakeMessage);
             return;
         }
-        const index = parseInt(collected.first().content.trim()) - 1;
-        if (isNaN(index) || index < 0 || index >= types.length) {
-            await interaction.followUp({ content: '❌ رقم غير صحيح.', ephemeral: true });
-            return;
-        }
-        const p = await getPunishment(guildId, action);
-        p.punishment_type = types[index];
-        await savePunishment(guildId, action, p);
-        await interaction.followUp({ content: `✅ تم تغيير عقوبة ${action} إلى ${types[index]}.`, ephemeral: true });
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendEditPunishmentPanel(fakeMessage, action);
-        return;
-    }
 
-    if (customId.startsWith('edit_duration_')) {
-        const action = customId.replace('edit_duration_', '');
-        await interaction.reply({ content: `📝 **أرسل المدة الجديدة بالثواني لـ ${action} (0 = لا مدة):**`, ephemeral: true });
-        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
-        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
-        if (collected.size === 0) {
-            await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+        if (customId === 'exempt_remove') {
+            const exemptRoles = await getExemptRoles(guildId);
+            if (exemptRoles.length === 0) {
+                await interaction.reply({ content: '📭 لا توجد رتب مستثناة لحذفها.', ephemeral: true });
+                return;
+            }
+            const list = exemptRoles.map((id, i) => {
+                const role = interaction.guild.roles.cache.get(id);
+                return `${i + 1}. ${role ? `@${role.name}` : `❌ معرف غير موجود: ${id}`}`;
+            }).join('\n');
+            await interaction.reply({ content: `📝 **اختر رقم الرتبة لحذفها:**\n${list}\nأرسل الرقم (مثال: 1)`, ephemeral: true });
+            const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+            if (collected.size === 0) {
+                await interaction.followUp({ content: '⏰ انتهى الوقت، حاول مرة أخرى.', ephemeral: true });
+                return;
+            }
+            const msg = collected.first();
+            const index = parseInt(msg.content.trim()) - 1;
+            if (isNaN(index) || index < 0 || index >= exemptRoles.length) {
+                await interaction.followUp({ content: '❌ رقم غير صحيح.', ephemeral: true });
+                return;
+            }
+            const removedId = exemptRoles[index];
+            await removeExemptRole(guildId, removedId);
+            const role = interaction.guild.roles.cache.get(removedId);
+            await interaction.followUp({ content: `✅ تم حذف الرتبة ${role ? `@${role.name}` : removedId} من قائمة الاستثناء.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendExemptPanel(fakeMessage);
             return;
         }
-        const val = parseInt(collected.first().content.trim());
-        if (isNaN(val) || val < 0) {
-            await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً (0 أو أكثر).', ephemeral: true });
-            return;
-        }
-        const p = await getPunishment(guildId, action);
-        p.duration = val;
-        await savePunishment(guildId, action, p);
-        await interaction.followUp({ content: `✅ تم تغيير مدة ${action} إلى ${val} ثانية.`, ephemeral: true });
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendEditPunishmentPanel(fakeMessage, action);
-        return;
-    }
 
-    if (customId.startsWith('edit_threshold_')) {
-        const action = customId.replace('edit_threshold_', '');
-        await interaction.reply({ content: `📝 **أرسل الحد الجديد (عدد التكرارات قبل تنفيذ العقوبة) لـ ${action}:**`, ephemeral: true });
-        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
-        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
-        if (collected.size === 0) {
-            await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+        // تعديل العقوبات
+        if (customId.startsWith('punish_edit_')) {
+            const action = customId.replace('punish_edit_', '');
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
             return;
         }
-        const val = parseInt(collected.first().content.trim());
-        if (isNaN(val) || val < 1) {
-            await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً أكبر من 0.', ephemeral: true });
-            return;
-        }
-        const p = await getPunishment(guildId, action);
-        p.threshold = val;
-        await savePunishment(guildId, action, p);
-        await interaction.followUp({ content: `✅ تم تغيير حد ${action} إلى ${val}.`, ephemeral: true });
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendEditPunishmentPanel(fakeMessage, action);
-        return;
-    }
 
-    if (customId.startsWith('edit_toggle_')) {
-        const action = customId.replace('edit_toggle_', '');
-        const p = await getPunishment(guildId, action);
-        p.enabled = !p.enabled;
-        await savePunishment(guildId, action, p);
-        await interaction.deferUpdate();
-        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendEditPunishmentPanel(fakeMessage, action);
-        return;
+        if (customId.startsWith('edit_type_')) {
+            const action = customId.replace('edit_type_', '');
+            const types = ['تحذير', 'كتم', 'طرد', 'حظر', 'إزالة رتب', 'توقيت'];
+            await interaction.reply({ content: `📝 **اختر نوع العقوبة الجديد لـ ${action}:**\n${types.map((t, i) => `${i+1}. ${t}`).join('\n')}\nأرسل الرقم (مثال: 1)`, ephemeral: true });
+            const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+            if (collected.size === 0) {
+                await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+                return;
+            }
+            const index = parseInt(collected.first().content.trim()) - 1;
+            if (isNaN(index) || index < 0 || index >= types.length) {
+                await interaction.followUp({ content: '❌ رقم غير صحيح.', ephemeral: true });
+                return;
+            }
+            const p = await getPunishment(guildId, action);
+            p.punishment_type = types[index];
+            await savePunishment(guildId, action, p);
+            await interaction.followUp({ content: `✅ تم تغيير عقوبة ${action} إلى ${types[index]}.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+
+        if (customId.startsWith('edit_duration_')) {
+            const action = customId.replace('edit_duration_', '');
+            await interaction.reply({ content: `📝 **أرسل المدة الجديدة بالثواني لـ ${action} (0 = لا مدة):**`, ephemeral: true });
+            const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+            if (collected.size === 0) {
+                await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+                return;
+            }
+            const val = parseInt(collected.first().content.trim());
+            if (isNaN(val) || val < 0) {
+                await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً (0 أو أكثر).', ephemeral: true });
+                return;
+            }
+            const p = await getPunishment(guildId, action);
+            p.duration = val;
+            await savePunishment(guildId, action, p);
+            await interaction.followUp({ content: `✅ تم تغيير مدة ${action} إلى ${val} ثانية.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+
+        if (customId.startsWith('edit_threshold_')) {
+            const action = customId.replace('edit_threshold_', '');
+            await interaction.reply({ content: `📝 **أرسل الحد الجديد (عدد التكرارات قبل تنفيذ العقوبة) لـ ${action}:**`, ephemeral: true });
+            const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+            if (collected.size === 0) {
+                await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+                return;
+            }
+            const val = parseInt(collected.first().content.trim());
+            if (isNaN(val) || val < 1) {
+                await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً أكبر من 0.', ephemeral: true });
+                return;
+            }
+            const p = await getPunishment(guildId, action);
+            p.threshold = val;
+            await savePunishment(guildId, action, p);
+            await interaction.followUp({ content: `✅ تم تغيير حد ${action} إلى ${val}.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+
+        if (customId.startsWith('edit_toggle_')) {
+            const action = customId.replace('edit_toggle_', '');
+            const p = await getPunishment(guildId, action);
+            p.enabled = !p.enabled;
+            await savePunishment(guildId, action, p);
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+    } catch (error) {
+        console.error('خطأ في التفاعل:', error);
+        try {
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ content: '❌ حدث خطأ، حاول مرة أخرى.', ephemeral: true });
+            }
+        } catch (e) {}
     }
 });
 
@@ -749,13 +762,12 @@ client.on('messageCreate', async (message) => {
     const settings = await getSettings(guildId);
     const content = message.content.toLowerCase();
 
-    // أمر فتح اللوحة
     if (content === '!اللوحة' || content === '/اللوحة' || content === '!panel' || content === '/panel' || content.includes('لوحة التحكم')) {
         await sendMainPanel(message);
         return;
     }
 
-    // مكافحة السبام
+    // باقي الحماية...
     if (settings.protection.anti_spam) {
         const p = await getPunishment(guildId, 'spam');
         if (p.enabled) {
@@ -773,7 +785,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // مكافحة الفيضان
     if (settings.protection.anti_flood) {
         const p = await getPunishment(guildId, 'flood');
         if (p.enabled) {
@@ -791,7 +802,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // مكافحة الروابط
     if (settings.protection.anti_links) {
         const p = await getPunishment(guildId, 'links');
         if (p.enabled && /(https?:\/\/[^\s]+|discord\.gg\/[a-zA-Z0-9]+|discord\.com\/invite\/[a-zA-Z0-9]+)/i.test(content)) {
@@ -801,7 +811,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // مكافحة الدعوات
     if (settings.protection.anti_invite) {
         const p = await getPunishment(guildId, 'invite');
         if (p.enabled && /discord\.gg\/[a-zA-Z0-9]+/i.test(content)) {
@@ -811,7 +820,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // مكافحة الكلمات المسيئة
     if (settings.protection.anti_toxic) {
         const p = await getPunishment(guildId, 'toxic');
         if (p.enabled) {
@@ -824,7 +832,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // مكافحة الأحرف الكبيرة
     if (settings.protection.anti_capslock) {
         const p = await getPunishment(guildId, 'caps');
         if (p.enabled) {
@@ -837,7 +844,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // مكافحة المنشن الجماعي
     if (settings.protection.anti_massmention) {
         const p = await getPunishment(guildId, 'massmention');
         if (p.enabled && message.mentions.users.size > 5) {
@@ -855,7 +861,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // تتبع الشبح
     if (message.mentions.users.size > 0) {
         ghostTracker.set(message.id, { author: message.author, mentions: message.mentions.users, time: Date.now() });
     }
@@ -872,14 +877,14 @@ client.on('messageDelete', async (message) => {
             const p = await getPunishment(message.guild.id, 'ghost');
             if (p.enabled) {
                 await applyPunishment(message.guild, message.author, 'ghost', p);
-                addLog(message.guild.id, 'شبح', client.user.id, message.author.id, 'حذف منشن');
+                await addLog(message.guild.id, 'شبح', client.user.id, message.author.id, 'حذف منشن');
             }
         }
         ghostTracker.delete(message.id);
     }
 });
 
-// أحداث الحماية الإضافية (مختصرة ولكن كاملة)
+// أحداث الحماية الإضافية (مختصرة)
 client.on('guildMemberAdd', async (member) => {
     const settings = await getSettings(member.guild.id);
     if (await isExempt(member.guild.id, member)) return;
@@ -895,7 +900,7 @@ client.on('guildMemberAdd', async (member) => {
             const recent = times.filter(t => now - t < 10000);
             if (recent.length >= p.threshold) {
                 await applyPunishment(member.guild, member.user, 'raid', p);
-                addLog(member.guild.id, 'ريك', client.user.id, member.id, 'هجوم جماعي');
+                await addLog(member.guild.id, 'ريك', client.user.id, member.id, 'هجوم جماعي');
                 return;
             }
         }
@@ -906,13 +911,12 @@ client.on('guildMemberAdd', async (member) => {
             const age = (Date.now() - member.user.createdAt.getTime()) / (1000 * 60 * 60 * 24);
             if (age < 7) {
                 await applyPunishment(member.guild, member.user, 'alt', p);
-                addLog(member.guild.id, 'وهمي', client.user.id, member.id, 'حساب وهمي');
+                await addLog(member.guild.id, 'وهمي', client.user.id, member.id, 'حساب وهمي');
             }
         }
     }
 });
 
-// أحداث القنوات والرتب
 client.on('channelCreate', async (channel) => {
     if (!channel.guild) return;
     const settings = await getSettings(channel.guild.id);
@@ -1060,4 +1064,8 @@ client.on('emojiDelete', async (emoji) => {
     }
 });
 
-client.login(TOKEN);
+// ------------------ التشغيل ------------------
+(async () => {
+    await connectDB();
+    client.login(TOKEN);
+})();
