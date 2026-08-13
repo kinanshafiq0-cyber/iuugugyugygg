@@ -1,13 +1,14 @@
 {
   "name": "discord-protection-bot",
   "version": "1.0.0",
-  "description": "نظام حماية متكامل مع لوحة تحكم كاملة",
+  "description": "نظام حماية متكامل مع قاعدة بيانات وعقوبات مخصصة",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1"
+    "discord.js": "^14.14.1",
+    "sqlite3": "^5.1.7"
   },
   "engines": {
     "node": ">=18.0.0"
