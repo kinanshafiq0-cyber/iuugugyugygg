@@ -1,7 +1,7 @@
 {
   "name": "discord-protection-bot",
   "version": "1.0.0",
-  "description": "نظام حماية متكامل مع SQLite",
+  "description": "نظام حماية متكامل",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
