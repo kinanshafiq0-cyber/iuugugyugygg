@@ -623,4 +623,432 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
             const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
             if (collected.size === 0) {
-                await interaction.followUp({ content:
+                await interaction.followUp({ content: '⏰ انتهى الوقت، حاول مرة أخرى.', ephemeral: true });
+                return;
+            }
+            const msg = collected.first();
+            const index = parseInt(msg.content.trim()) - 1;
+            if (isNaN(index) || index < 0 || index >= exemptRoles.length) {
+                await interaction.followUp({ content: '❌ رقم غير صحيح.', ephemeral: true });
+                return;
+            }
+            const removedId = exemptRoles[index];
+            await removeExemptRole(guildId, removedId);
+            const role = interaction.guild.roles.cache.get(removedId);
+            await interaction.followUp({ content: `✅ تم حذف الرتبة ${role ? `@${role.name}` : removedId} من قائمة الاستثناء.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendExemptPanel(fakeMessage);
+            return;
+        }
+
+        if (customId.startsWith('punish_edit_')) {
+            const action = customId.replace('punish_edit_', '');
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+
+        if (customId.startsWith('edit_type_')) {
+            const action = customId.replace('edit_type_', '');
+            const types = ['تحذير', 'كتم', 'طرد', 'حظر', 'إزالة رتب', 'توقيت'];
+            await interaction.reply({ content: `📝 **اختر نوع العقوبة الجديد لـ ${action}:**\n${types.map((t, i) => `${i+1}. ${t}`).join('\n')}\nأرسل الرقم (مثال: 1)`, ephemeral: true });
+            const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+            if (collected.size === 0) {
+                await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+                return;
+            }
+            const index = parseInt(collected.first().content.trim()) - 1;
+            if (isNaN(index) || index < 0 || index >= types.length) {
+                await interaction.followUp({ content: '❌ رقم غير صحيح.', ephemeral: true });
+                return;
+            }
+            const p = await getPunishment(guildId, action);
+            p.punishment_type = types[index];
+            await savePunishment(guildId, action, p);
+            await interaction.followUp({ content: `✅ تم تغيير عقوبة ${action} إلى ${types[index]}.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+
+        if (customId.startsWith('edit_duration_')) {
+            const action = customId.replace('edit_duration_', '');
+            await interaction.reply({ content: `📝 **أرسل المدة الجديدة بالثواني لـ ${action} (0 = لا مدة):**`, ephemeral: true });
+            const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+            if (collected.size === 0) {
+                await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+                return;
+            }
+            const val = parseInt(collected.first().content.trim());
+            if (isNaN(val) || val < 0) {
+                await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً (0 أو أكثر).', ephemeral: true });
+                return;
+            }
+            const p = await getPunishment(guildId, action);
+            p.duration = val;
+            await savePunishment(guildId, action, p);
+            await interaction.followUp({ content: `✅ تم تغيير مدة ${action} إلى ${val} ثانية.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+
+        if (customId.startsWith('edit_threshold_')) {
+            const action = customId.replace('edit_threshold_', '');
+            await interaction.reply({ content: `📝 **أرسل الحد الجديد (عدد التكرارات قبل تنفيذ العقوبة) لـ ${action}:**`, ephemeral: true });
+            const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+            if (collected.size === 0) {
+                await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+                return;
+            }
+            const val = parseInt(collected.first().content.trim());
+            if (isNaN(val) || val < 1) {
+                await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً أكبر من 0.', ephemeral: true });
+                return;
+            }
+            const p = await getPunishment(guildId, action);
+            p.threshold = val;
+            await savePunishment(guildId, action, p);
+            await interaction.followUp({ content: `✅ تم تغيير حد ${action} إلى ${val}.`, ephemeral: true });
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+
+        if (customId.startsWith('edit_toggle_')) {
+            const action = customId.replace('edit_toggle_', '');
+            const p = await getPunishment(guildId, action);
+            p.enabled = !p.enabled;
+            await savePunishment(guildId, action, p);
+            await interaction.deferUpdate().catch(() => {});
+            const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
+            await sendEditPunishmentPanel(fakeMessage, action);
+            return;
+        }
+    } catch (error) {
+        console.error('خطأ في التفاعل:', error);
+        try {
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ content: '❌ حدث خطأ، حاول مرة أخرى.', ephemeral: true });
+            }
+        } catch (e) {}
+    }
+});
+
+// ------------------ أحداث الحماية ------------------
+client.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.guild) return;
+    if (await isExempt(message.guild.id, message.member)) return;
+    
+    const guildId = message.guild.id;
+    const settings = await getSettings(guildId);
+    const content = message.content.toLowerCase();
+
+    if (content === '!اللوحة' || content === '/اللوحة' || content === '!panel' || content === '/panel' || content.includes('لوحة التحكم')) {
+        await sendMainPanel(message);
+        return;
+    }
+
+    // باقي الحماية...
+    if (settings.protection.anti_spam) {
+        const p = await getPunishment(guildId, 'spam');
+        if (p.enabled) {
+            if (!spamTracker.has(message.author.id)) spamTracker.set(message.author.id, []);
+            const times = spamTracker.get(message.author.id);
+            const now = Date.now();
+            times.push(now);
+            if (times.length > 20) times.shift();
+            const recent = times.filter(t => now - t < 3000);
+            if (recent.length >= p.threshold) {
+                await message.delete().catch(() => {});
+                await applyPunishment(message.guild, message.author, 'spam', p);
+                return;
+            }
+        }
+    }
+
+    if (settings.protection.anti_flood) {
+        const p = await getPunishment(guildId, 'flood');
+        if (p.enabled) {
+            if (!floodTracker.has(message.channel.id)) floodTracker.set(message.channel.id, []);
+            const times = floodTracker.get(message.channel.id);
+            const now = Date.now();
+            times.push(now);
+            if (times.length > 30) times.shift();
+            const recent = times.filter(t => now - t < 5000);
+            if (recent.length >= p.threshold) {
+                await message.delete().catch(() => {});
+                await applyPunishment(message.guild, message.author, 'flood', p);
+                return;
+            }
+        }
+    }
+
+    if (settings.protection.anti_links) {
+        const p = await getPunishment(guildId, 'links');
+        if (p.enabled && /(https?:\/\/[^\s]+|discord\.gg\/[a-zA-Z0-9]+|discord\.com\/invite\/[a-zA-Z0-9]+)/i.test(content)) {
+            await message.delete().catch(() => {});
+            await applyPunishment(message.guild, message.author, 'links', p);
+            return;
+        }
+    }
+
+    if (settings.protection.anti_invite) {
+        const p = await getPunishment(guildId, 'invite');
+        if (p.enabled && /discord\.gg\/[a-zA-Z0-9]+/i.test(content)) {
+            await message.delete().catch(() => {});
+            await applyPunishment(message.guild, message.author, 'invite', p);
+            return;
+        }
+    }
+
+    if (settings.protection.anti_toxic) {
+        const p = await getPunishment(guildId, 'toxic');
+        if (p.enabled) {
+            const toxic = ['fuck', 'shit', 'asshole', 'bitch', 'cunt', 'nigger', 'faggot', 'kys', 'die', 'kill', 'خول', 'قحبة', 'منيك', 'كس', 'زبي', 'عاهر', 'شرموطة'];
+            if (toxic.some(w => content.includes(w))) {
+                await message.delete().catch(() => {});
+                await applyPunishment(message.guild, message.author, 'toxic', p);
+                return;
+            }
+        }
+    }
+
+    if (settings.protection.anti_capslock) {
+        const p = await getPunishment(guildId, 'caps');
+        if (p.enabled) {
+            const letters = message.content.replace(/[^a-zA-Z]/g, '');
+            if (letters.length > 10 && letters.toUpperCase() === letters && letters.length / message.content.length > 0.7) {
+                await message.delete().catch(() => {});
+                await applyPunishment(message.guild, message.author, 'caps', p);
+                return;
+            }
+        }
+    }
+
+    if (settings.protection.anti_massmention) {
+        const p = await getPunishment(guildId, 'massmention');
+        if (p.enabled && message.mentions.users.size > 5) {
+            if (!mentionTracker.has(message.author.id)) mentionTracker.set(message.author.id, []);
+            const times = mentionTracker.get(message.author.id);
+            const now = Date.now();
+            times.push(now);
+            if (times.length > 20) times.shift();
+            const recent = times.filter(t => now - t < 10000);
+            if (recent.length >= p.threshold) {
+                await message.delete().catch(() => {});
+                await applyPunishment(message.guild, message.author, 'massmention', p);
+                return;
+            }
+        }
+    }
+
+    if (message.mentions.users.size > 0) {
+        ghostTracker.set(message.id, { author: message.author, mentions: message.mentions.users, time: Date.now() });
+    }
+});
+
+client.on('messageDelete', async (message) => {
+    if (!message.guild || !message.author || message.author.bot) return;
+    const settings = await getSettings(message.guild.id);
+    if (!settings.protection.anti_ghostping) return;
+    if (await isExempt(message.guild.id, message.member)) return;
+    if (ghostTracker.has(message.id)) {
+        const data = ghostTracker.get(message.id);
+        if (data.mentions.size > 0 && Date.now() - data.time < 5000) {
+            const p = await getPunishment(message.guild.id, 'ghost');
+            if (p.enabled) {
+                await applyPunishment(message.guild, message.author, 'ghost', p);
+                addLog(message.guild.id, 'شبح', client.user.id, message.author.id, 'حذف منشن');
+            }
+        }
+        ghostTracker.delete(message.id);
+    }
+});
+
+// أحداث إضافية (مختصرة)
+client.on('guildMemberAdd', async (member) => {
+    const settings = await getSettings(member.guild.id);
+    if (await isExempt(member.guild.id, member)) return;
+    
+    if (settings.protection.anti_raid) {
+        const p = await getPunishment(member.guild.id, 'raid');
+        if (p.enabled) {
+            const now = Date.now();
+            if (!joinTimes.has(member.guild.id)) joinTimes.set(member.guild.id, []);
+            const times = joinTimes.get(member.guild.id);
+            times.push(now);
+            if (times.length > 20) times.shift();
+            const recent = times.filter(t => now - t < 10000);
+            if (recent.length >= p.threshold) {
+                await applyPunishment(member.guild, member.user, 'raid', p);
+                addLog(member.guild.id, 'ريك', client.user.id, member.id, 'هجوم جماعي');
+                return;
+            }
+        }
+    }
+    if (settings.protection.anti_alts) {
+        const p = await getPunishment(member.guild.id, 'alt');
+        if (p.enabled) {
+            const age = (Date.now() - member.user.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+            if (age < 7) {
+                await applyPunishment(member.guild, member.user, 'alt', p);
+                addLog(member.guild.id, 'وهمي', client.user.id, member.id, 'حساب وهمي');
+            }
+        }
+    }
+});
+
+client.on('channelCreate', async (channel) => {
+    if (!channel.guild) return;
+    const settings = await getSettings(channel.guild.id);
+    if (!settings.protection.anti_channel_create) return;
+    const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelCreate });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(channel.guild.id, await channel.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(channel.guild.id, 'channel_create');
+        if (p.enabled) {
+            await channel.delete().catch(() => {});
+            await applyPunishment(channel.guild, entry.executor, 'channel_create', p);
+        }
+    }
+});
+
+client.on('channelDelete', async (channel) => {
+    if (!channel.guild) return;
+    const settings = await getSettings(channel.guild.id);
+    if (!settings.protection.anti_channel_delete) return;
+    const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(channel.guild.id, await channel.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(channel.guild.id, 'channel_delete');
+        if (p.enabled) {
+            await applyPunishment(channel.guild, entry.executor, 'channel_delete', p);
+        }
+    }
+});
+
+client.on('roleCreate', async (role) => {
+    if (!role.guild) return;
+    const settings = await getSettings(role.guild.id);
+    if (!settings.protection.anti_role_create) return;
+    const audit = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleCreate });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(role.guild.id, await role.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(role.guild.id, 'role_create');
+        if (p.enabled) {
+            await role.delete().catch(() => {});
+            await applyPunishment(role.guild, entry.executor, 'role_create', p);
+        }
+    }
+});
+
+client.on('roleDelete', async (role) => {
+    if (!role.guild) return;
+    const settings = await getSettings(role.guild.id);
+    if (!settings.protection.anti_role_delete) return;
+    const audit = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(role.guild.id, await role.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(role.guild.id, 'role_delete');
+        if (p.enabled) {
+            await applyPunishment(role.guild, entry.executor, 'role_delete', p);
+        }
+    }
+});
+
+client.on('guildBanAdd', async (ban) => {
+    const settings = await getSettings(ban.guild.id);
+    if (!settings.protection.anti_ban) return;
+    const audit = await ban.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberBanAdd });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(ban.guild.id, await ban.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(ban.guild.id, 'ban');
+        if (p.enabled) {
+            await ban.guild.members.unban(ban.user).catch(() => {});
+            await applyPunishment(ban.guild, entry.executor, 'ban', p);
+        }
+    }
+});
+
+client.on('guildMemberRemove', async (member) => {
+    if (!member.guild) return;
+    const settings = await getSettings(member.guild.id);
+    if (!settings.protection.anti_kick) return;
+    const audit = await member.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberKick });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(member.guild.id, await member.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(member.guild.id, 'kick');
+        if (p.enabled) {
+            await applyPunishment(member.guild, entry.executor, 'kick', p);
+        }
+    }
+});
+
+client.on('webhookUpdate', async (webhook) => {
+    if (!webhook.guild) return;
+    const settings = await getSettings(webhook.guild.id);
+    if (!settings.protection.anti_webhook) return;
+    const audit = await webhook.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.WebhookCreate });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(webhook.guild.id, await webhook.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(webhook.guild.id, 'webhook');
+        if (p.enabled) {
+            const hooks = await webhook.guild.fetchWebhooks();
+            for (const wh of hooks.values()) { if (wh.createdAt.getTime() > Date.now() - 5000) await wh.delete().catch(() => {}); }
+            await applyPunishment(webhook.guild, entry.executor, 'webhook', p);
+        }
+    }
+});
+
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+    if (oldMember.nickname === newMember.nickname) return;
+    const settings = await getSettings(newMember.guild.id);
+    if (!settings.protection.anti_nick) return;
+    if (await isExempt(newMember.guild.id, newMember)) return;
+    const audit = await newMember.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberUpdate });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(newMember.guild.id, await newMember.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(newMember.guild.id, 'nick');
+        if (p.enabled) {
+            await newMember.setNickname(oldMember.nickname).catch(() => {});
+            await applyPunishment(newMember.guild, entry.executor, 'nick', p);
+        }
+    }
+});
+
+client.on('emojiCreate', async (emoji) => {
+    if (!emoji.guild) return;
+    const settings = await getSettings(emoji.guild.id);
+    if (!settings.protection.anti_emoji_create) return;
+    const audit = await emoji.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.EmojiCreate });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(emoji.guild.id, await emoji.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(emoji.guild.id, 'emoji_create');
+        if (p.enabled) {
+            await emoji.delete().catch(() => {});
+            await applyPunishment(emoji.guild, entry.executor, 'emoji_create', p);
+        }
+    }
+});
+
+client.on('emojiDelete', async (emoji) => {
+    if (!emoji.guild) return;
+    const settings = await getSettings(emoji.guild.id);
+    if (!settings.protection.anti_emoji_delete) return;
+    const audit = await emoji.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.EmojiDelete });
+    const entry = audit.entries.first();
+    if (entry?.executor && !(await isExempt(emoji.guild.id, await emoji.guild.members.fetch(entry.executor.id).catch(() => null)))) {
+        const p = await getPunishment(emoji.guild.id, 'emoji_delete');
+        if (p.enabled) {
+            await applyPunishment(emoji.guild, entry.executor, 'emoji_delete', p);
+        }
+    }
+});
+
+// ------------------ التشغيل ------------------
+client.login(TOKEN);
