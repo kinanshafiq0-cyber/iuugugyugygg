@@ -60,6 +60,7 @@ const ghostTracker = new Collection();
 const userWarns = new Collection();
 const joinTimes = new Collection();
 let eventLog = [];
+let panelPage = {}; // لتخزين الصفحة الحالية لكل مستخدم
 
 function isExempt(member) {
     if (!member) return false;
@@ -97,11 +98,20 @@ client.once('ready', () => {
     client.user.setActivity('!panel | /panel', { type: 3 });
 });
 
-// دالة إرسال اللوحة
-async function sendPanel(message) {
+// دالة إرسال اللوحة مع تقسيم الأزرار إلى 5 صفوف كحد أقصى
+async function sendPanel(message, page = 0) {
+    const protectionKeys = Object.keys(config.protection);
+    const itemsPerPage = 25; // 5 صفوف × 5 أزرار
+    const totalPages = Math.ceil(protectionKeys.length / itemsPerPage);
+    if (page >= totalPages) page = 0;
+    
+    const start = page * itemsPerPage;
+    const end = Math.min(start + itemsPerPage, protectionKeys.length);
+    const currentKeys = protectionKeys.slice(start, end);
+
     const embed = new EmbedBuilder()
         .setTitle('🛡️ لوحة تحكم الحماية')
-        .setDescription('اضغط على الأزرار لتغيير حالة الحماية.\n🟢 مفعل | 🔴 معطل')
+        .setDescription(`اضغط على الأزرار لتغيير حالة الحماية.\n🟢 مفعل | 🔴 معطل\nصفحة ${page + 1} من ${totalPages}`)
         .setColor('#2b2d42')
         .setFooter({ text: 'نظام الحماية المتكامل' })
         .setTimestamp();
@@ -113,41 +123,78 @@ async function sendPanel(message) {
         anti_role_delete: '🎭', anti_role_create: '➕', anti_ban: '⛔', anti_kick: '👢',
         anti_alts: '👤', anti_toxic: '💬', anti_capslock: '🔠', anti_massmention: '📢',
         anti_flood: '🌊', anti_invite: '📨', anti_ghostping: '👻', anti_massban: '🧹',
-        anti_masskick: '🧹', permission_guard: '🛡️'
+        anti_masskick: '🧹', permission_guard: '🛡️',
+        anti_selfbot: '🤖', anti_prune: '🧹', anti_emoji_delete: '😢', anti_emoji_create: '➕',
+        anti_sticker_delete: '🏷️', anti_sticker_create: '➕', anti_integration: '🔌', anti_vanity: '🔗'
     };
-    for (const [key, val] of Object.entries(config.protection)) {
+    for (const key of currentKeys) {
+        const val = config.protection[key];
         const emoji = emojis[key] || '⚙️';
         statusText += `${emoji} **${key.replace(/_/g, ' ')}** : ${val ? '🟢 مفعل' : '🔴 معطل'}\n`;
     }
     embed.addFields({ name: '📋 الحالة', value: statusText, inline: false });
 
+    // بناء الصفوف (كل صف 5 أزرار كحد أقصى)
     const rows = [];
     let currentRow = new ActionRowBuilder();
     let count = 0;
-    for (const [key, val] of Object.entries(config.protection)) {
+    for (const key of currentKeys) {
         const label = key.replace(/_/g, ' ').substring(0, 20);
         const button = new ButtonBuilder()
             .setCustomId(`protect_${key}`)
             .setLabel(label)
-            .setStyle(val ? ButtonStyle.Success : ButtonStyle.Danger)
-            .setEmoji(val ? '✅' : '❌');
+            .setStyle(config.protection[key] ? ButtonStyle.Success : ButtonStyle.Danger)
+            .setEmoji(config.protection[key] ? '✅' : '❌');
         currentRow.addComponents(button);
         count++;
-        if (count % 4 === 0) {
+        if (count % 5 === 0) {
             rows.push(currentRow);
             currentRow = new ActionRowBuilder();
         }
     }
     if (currentRow.components.length > 0) rows.push(currentRow);
 
-    const extraRow = new ActionRowBuilder()
-        .addComponents(
+    // أزرار التنقل (السابق/التالي) + أزرار إضافية
+    const navRow = new ActionRowBuilder();
+    if (page > 0) {
+        navRow.addComponents(
+            new ButtonBuilder().setCustomId(`page_${page - 1}`).setLabel('◀ السابق').setStyle(ButtonStyle.Primary)
+        );
+    }
+    if (page < totalPages - 1) {
+        navRow.addComponents(
+            new ButtonBuilder().setCustomId(`page_${page + 1}`).setLabel('التالي ▶').setStyle(ButtonStyle.Primary)
+        );
+    }
+    // إضافة أزرار إضافية فقط في الصفحة الأولى
+    const extraRow = new ActionRowBuilder();
+    if (page === 0) {
+        extraRow.addComponents(
             new ButtonBuilder().setCustomId('logs').setLabel('📋 السجل').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('reset_warns').setLabel('🔄 إعادة تعيين').setStyle(ButtonStyle.Danger),
             new ButtonBuilder().setCustomId('refresh').setLabel('🔄 تحديث').setStyle(ButtonStyle.Primary)
         );
+    }
 
-    await message.reply({ embeds: [embed], components: [...rows, extraRow] });
+    // تجميع الصفوف (حد أقصى 5 صفوف)
+    const finalRows = [];
+    let totalRows = 0;
+    for (const row of rows) {
+        if (totalRows < 4) { // نترك صف واحد للأزرار الإضافية
+            finalRows.push(row);
+            totalRows++;
+        }
+    }
+    if (navRow.components.length > 0 && totalRows < 5) {
+        finalRows.push(navRow);
+        totalRows++;
+    }
+    if (extraRow.components.length > 0 && totalRows < 5) {
+        finalRows.push(extraRow);
+        totalRows++;
+    }
+
+    await message.reply({ embeds: [embed], components: finalRows });
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -156,6 +203,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const customId = interaction.customId;
 
+    // التنقل بين الصفحات
+    if (customId.startsWith('page_')) {
+        const page = parseInt(customId.split('_')[1]);
+        await interaction.deferUpdate();
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendPanel(fakeMessage, page);
+        return;
+    }
+
+    // تفعيل/تعطيل الحماية
     if (customId.startsWith('protect_')) {
         const key = customId.replace('protect_', '');
         if (config.protection.hasOwnProperty(key)) {
@@ -163,7 +220,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
             saveConfig();
             await interaction.deferUpdate();
             const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-            await sendPanel(fakeMessage);
+            // الحفاظ على الصفحة الحالية
+            const currentPage = panelPage[interaction.user.id] || 0;
+            await sendPanel(fakeMessage, currentPage);
         }
         return;
     }
@@ -185,20 +244,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (customId === 'refresh') {
         await interaction.deferUpdate();
         const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendPanel(fakeMessage);
+        const currentPage = panelPage[interaction.user.id] || 0;
+        await sendPanel(fakeMessage, currentPage);
         return;
     }
 });
 
-// ------- أحداث الحماية (مختصرة لكن كاملة) -------
+// ------- أحداث الحماية (مختصرة) -------
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     if (isExempt(message.member)) return;
     const content = message.content.toLowerCase();
 
-    // أوامر فتح اللوحة (أكثر من طريقة)
     if (content === '!panel' || content === '/panel' || content === '!حماية' || content === '/حماية' || content.includes('لوحة التحكم')) {
-        await sendPanel(message);
+        panelPage[message.author.id] = 0;
+        await sendPanel(message, 0);
         return;
     }
 
@@ -289,7 +349,7 @@ client.on('messageDelete', async (message) => {
     }
 });
 
-// باقي أحداث الحماية (مختصرة لكن تعمل)
+// أحداث الحماية الإضافية (مختصرة)
 client.on('channelCreate', async (channel) => {
     if (!config.protection.anti_channel_create || !channel.guild) return;
     const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelCreate });
