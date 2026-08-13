@@ -1,164 +1,158 @@
 const { Client, GatewayIntentBits, Partials, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AuditLogEvent, Collection } = require('discord.js');
-const { MongoClient } = require('mongodb');
+const sqlite3 = require('sqlite3').verbose();
 
 const TOKEN = process.env.DISCORD_TOKEN || 'ضع_التوكن_هنا';
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017';
+const db = new sqlite3.Database('./data.db');
 
-// ------------------ MongoDB ------------------
-let db;
-let settingsCollection, punishmentsCollection, warnsCollection, logsCollection, exemptRolesCollection;
-
-async function connectDB() {
-    const client = new MongoClient(MONGO_URI);
-    await client.connect();
-    db = client.db('protection_bot');
-    settingsCollection = db.collection('settings');
-    punishmentsCollection = db.collection('punishments');
-    warnsCollection = db.collection('warns');
-    logsCollection = db.collection('logs');
-    exemptRolesCollection = db.collection('exempt_roles');
-    
-    await settingsCollection.createIndex({ guild_id: 1 }, { unique: true });
-    await punishmentsCollection.createIndex({ guild_id: 1, action: 1 }, { unique: true });
-    await warnsCollection.createIndex({ guild_id: 1, user_id: 1 }, { unique: true });
-    await logsCollection.createIndex({ guild_id: 1, time: -1 });
-    await exemptRolesCollection.createIndex({ guild_id: 1, role_id: 1 }, { unique: true });
-    
-    console.log('✅ تم الاتصال بـ MongoDB');
-}
+// ------------------ إنشاء الجداول ------------------
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS settings (guild_id TEXT PRIMARY KEY, config TEXT)`);
+    db.run(`CREATE TABLE IF NOT EXISTS punishments (guild_id TEXT, action TEXT, punishment_type TEXT, duration INTEGER, threshold INTEGER, enabled INTEGER, PRIMARY KEY (guild_id, action))`);
+    db.run(`CREATE TABLE IF NOT EXISTS warns (guild_id TEXT, user_id TEXT, count INTEGER, PRIMARY KEY (guild_id, user_id))`);
+    db.run(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, time INTEGER, type TEXT, user_id TEXT, target_id TEXT, detail TEXT)`);
+    db.run(`CREATE TABLE IF NOT EXISTS exempt_roles (guild_id TEXT, role_id TEXT, PRIMARY KEY (guild_id, role_id))`);
+});
 
 // ------------------ دوال قاعدة البيانات ------------------
-async function getSettings(guildId) {
-    const doc = await settingsCollection.findOne({ guild_id: guildId });
-    if (!doc) {
-        const defaultConfig = {
-            guild_id: guildId,
-            protection: {
-                anti_raid: false, anti_spam: false, anti_links: false, anti_bots: false,
-                anti_selfbot: false, anti_webhook: false, anti_nick: false, anti_channel_delete: false,
-                anti_channel_create: false, anti_role_delete: false, anti_role_create: false,
-                anti_ban: false, anti_kick: false, anti_prune: false, anti_emoji_delete: false,
-                anti_emoji_create: false, anti_sticker_delete: false, anti_sticker_create: false,
-                anti_integration: false, anti_vanity: false, anti_alts: false, anti_toxic: false,
-                anti_capslock: false, anti_massmention: false, anti_flood: false, anti_invite: false,
-                anti_ghostping: false, anti_massban: false, anti_masskick: false, permission_guard: false
-            },
-            warn_threshold: 3
-        };
-        await settingsCollection.insertOne(defaultConfig);
-        return defaultConfig;
-    }
-    return doc;
-}
-
-async function saveSettings(guildId, config) {
-    await settingsCollection.updateOne(
-        { guild_id: guildId },
-        { $set: config },
-        { upsert: true }
-    );
-}
-
-async function getPunishment(guildId, action) {
-    const doc = await punishmentsCollection.findOne({ guild_id: guildId, action: action });
-    if (!doc) {
-        const defaults = {
-            spam: { punishment_type: 'كتم', duration: 300, threshold: 5, enabled: true },
-            flood: { punishment_type: 'توقيت', duration: 60, threshold: 10, enabled: true },
-            links: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
-            invite: { punishment_type: 'طرد', duration: 0, threshold: 1, enabled: true },
-            toxic: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
-            caps: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
-            massmention: { punishment_type: 'كتم', duration: 600, threshold: 3, enabled: true },
-            ghost: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
-            raid: { punishment_type: 'حظر', duration: 0, threshold: 5, enabled: true },
-            alt: { punishment_type: 'طرد', duration: 0, threshold: 1, enabled: true },
-            webhook: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
-            nick: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
-            channel_create: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
-            channel_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
-            role_create: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
-            role_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
-            ban: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
-            kick: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
-            emoji_create: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true },
-            emoji_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true },
-            massban: { punishment_type: 'حظر', duration: 0, threshold: 3, enabled: true },
-            masskick: { punishment_type: 'حظر', duration: 0, threshold: 3, enabled: true },
-            permission_guard: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: true }
-        };
-        const def = defaults[action] || { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: true };
-        const newDoc = { guild_id: guildId, action: action, ...def };
-        await punishmentsCollection.insertOne(newDoc);
-        return newDoc;
-    }
-    return doc;
-}
-
-async function savePunishment(guildId, action, data) {
-    await punishmentsCollection.updateOne(
-        { guild_id: guildId, action: action },
-        { $set: { ...data, guild_id: guildId, action: action } },
-        { upsert: true }
-    );
-}
-
-async function getWarns(guildId, userId) {
-    const doc = await warnsCollection.findOne({ guild_id: guildId, user_id: userId });
-    return doc ? doc.count : 0;
-}
-
-async function setWarns(guildId, userId, count) {
-    await warnsCollection.updateOne(
-        { guild_id: guildId, user_id: userId },
-        { $set: { count: count } },
-        { upsert: true }
-    );
-}
-
-async function addWarn(guildId, userId) {
-    const current = await getWarns(guildId, userId);
-    await setWarns(guildId, userId, current + 1);
-    return current + 1;
-}
-
-async function resetWarns(guildId) {
-    await warnsCollection.deleteMany({ guild_id: guildId });
-}
-
-async function addLog(guildId, type, userId, targetId, detail) {
-    await logsCollection.insertOne({
-        guild_id: guildId,
-        time: Date.now(),
-        type: type,
-        user_id: userId,
-        target_id: targetId,
-        detail: detail
+function getSettings(guildId) {
+    return new Promise((resolve) => {
+        db.get('SELECT config FROM settings WHERE guild_id = ?', [guildId], (err, row) => {
+            if (err || !row) {
+                const defaultConfig = {
+                    guild_id: guildId,
+                    protection: {
+                        anti_raid: false, anti_spam: false, anti_links: false, anti_bots: false,
+                        anti_selfbot: false, anti_webhook: false, anti_nick: false, anti_channel_delete: false,
+                        anti_channel_create: false, anti_role_delete: false, anti_role_create: false,
+                        anti_ban: false, anti_kick: false, anti_prune: false, anti_emoji_delete: false,
+                        anti_emoji_create: false, anti_sticker_delete: false, anti_sticker_create: false,
+                        anti_integration: false, anti_vanity: false, anti_alts: false, anti_toxic: false,
+                        anti_capslock: false, anti_massmention: false, anti_flood: false, anti_invite: false,
+                        anti_ghostping: false, anti_massban: false, anti_masskick: false, permission_guard: false
+                    },
+                    warn_threshold: 3
+                };
+                db.run('INSERT OR REPLACE INTO settings (guild_id, config) VALUES (?, ?)', [guildId, JSON.stringify(defaultConfig)]);
+                resolve(defaultConfig);
+            } else {
+                resolve(JSON.parse(row.config));
+            }
+        });
     });
 }
 
-async function getLogs(guildId, limit = 50) {
-    return await logsCollection.find({ guild_id: guildId })
-        .sort({ time: -1 })
-        .limit(limit)
-        .toArray();
+function saveSettings(guildId, config) {
+    return new Promise((resolve) => {
+        db.run('INSERT OR REPLACE INTO settings (guild_id, config) VALUES (?, ?)', [guildId, JSON.stringify(config)], resolve);
+    });
 }
 
-async function getExemptRoles(guildId) {
-    const docs = await exemptRolesCollection.find({ guild_id: guildId }).toArray();
-    return docs.map(d => d.role_id);
+function getPunishment(guildId, action) {
+    return new Promise((resolve) => {
+        db.get('SELECT * FROM punishments WHERE guild_id = ? AND action = ?', [guildId, action], (err, row) => {
+            if (err || !row) {
+                const defaults = {
+                    spam: { punishment_type: 'كتم', duration: 300, threshold: 5, enabled: 1 },
+                    flood: { punishment_type: 'توقيت', duration: 60, threshold: 10, enabled: 1 },
+                    links: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
+                    invite: { punishment_type: 'طرد', duration: 0, threshold: 1, enabled: 1 },
+                    toxic: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
+                    caps: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
+                    massmention: { punishment_type: 'كتم', duration: 600, threshold: 3, enabled: 1 },
+                    ghost: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
+                    raid: { punishment_type: 'حظر', duration: 0, threshold: 5, enabled: 1 },
+                    alt: { punishment_type: 'طرد', duration: 0, threshold: 1, enabled: 1 },
+                    webhook: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
+                    nick: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
+                    channel_create: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
+                    channel_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
+                    role_create: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
+                    role_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
+                    ban: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
+                    kick: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
+                    emoji_create: { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 },
+                    emoji_delete: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 },
+                    massban: { punishment_type: 'حظر', duration: 0, threshold: 3, enabled: 1 },
+                    masskick: { punishment_type: 'حظر', duration: 0, threshold: 3, enabled: 1 },
+                    permission_guard: { punishment_type: 'حظر', duration: 0, threshold: 1, enabled: 1 }
+                };
+                const def = defaults[action] || { punishment_type: 'تحذير', duration: 0, threshold: 1, enabled: 1 };
+                db.run('INSERT OR REPLACE INTO punishments (guild_id, action, punishment_type, duration, threshold, enabled) VALUES (?, ?, ?, ?, ?, ?)',
+                    [guildId, action, def.punishment_type, def.duration, def.threshold, def.enabled]);
+                resolve({ ...def, guild_id: guildId, action: action });
+            } else {
+                resolve(row);
+            }
+        });
+    });
 }
 
-async function addExemptRole(guildId, roleId) {
-    await exemptRolesCollection.updateOne(
-        { guild_id: guildId, role_id: roleId },
-        { $set: { guild_id: guildId, role_id: roleId } },
-        { upsert: true }
-    );
+function savePunishment(guildId, action, data) {
+    return new Promise((resolve) => {
+        db.run('INSERT OR REPLACE INTO punishments (guild_id, action, punishment_type, duration, threshold, enabled) VALUES (?, ?, ?, ?, ?, ?)',
+            [guildId, action, data.punishment_type, data.duration || 0, data.threshold || 1, data.enabled ? 1 : 0], resolve);
+    });
 }
 
-async function removeExemptRole(guildId, roleId) {
-    await exemptRolesCollection.deleteOne({ guild_id: guildId, role_id: roleId });
+function getWarns(guildId, userId) {
+    return new Promise((resolve) => {
+        db.get('SELECT count FROM warns WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+            resolve(row ? row.count : 0);
+        });
+    });
+}
+
+function setWarns(guildId, userId, count) {
+    return new Promise((resolve) => {
+        db.run('INSERT OR REPLACE INTO warns (guild_id, user_id, count) VALUES (?, ?, ?)', [guildId, userId, count], resolve);
+    });
+}
+
+function addWarn(guildId, userId) {
+    return new Promise(async (resolve) => {
+        const current = await getWarns(guildId, userId);
+        await setWarns(guildId, userId, current + 1);
+        resolve(current + 1);
+    });
+}
+
+function resetWarns(guildId) {
+    return new Promise((resolve) => {
+        db.run('DELETE FROM warns WHERE guild_id = ?', [guildId], resolve);
+    });
+}
+
+function addLog(guildId, type, userId, targetId, detail) {
+    db.run('INSERT INTO logs (guild_id, time, type, user_id, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)',
+        [guildId, Date.now(), type, userId, targetId, detail]);
+}
+
+function getLogs(guildId, limit = 50) {
+    return new Promise((resolve) => {
+        db.all('SELECT * FROM logs WHERE guild_id = ? ORDER BY time DESC LIMIT ?', [guildId, limit], (err, rows) => {
+            resolve(rows || []);
+        });
+    });
+}
+
+function getExemptRoles(guildId) {
+    return new Promise((resolve) => {
+        db.all('SELECT role_id FROM exempt_roles WHERE guild_id = ?', [guildId], (err, rows) => {
+            resolve(rows ? rows.map(r => r.role_id) : []);
+        });
+    });
+}
+
+function addExemptRole(guildId, roleId) {
+    return new Promise((resolve) => {
+        db.run('INSERT OR REPLACE INTO exempt_roles (guild_id, role_id) VALUES (?, ?)', [guildId, roleId], resolve);
+    });
+}
+
+function removeExemptRole(guildId, roleId) {
+    return new Promise((resolve) => {
+        db.run('DELETE FROM exempt_roles WHERE guild_id = ? AND role_id = ?', [guildId, roleId], resolve);
+    });
 }
 
 // ------------------ العميل ------------------
@@ -237,7 +231,7 @@ async function applyPunishment(guild, user, action, punishmentData) {
             default:
                 result = '⚠️ عقوبة غير معروفة';
         }
-        await addLog(guild.id, 'عقوبة', client.user.id, user.id, `${action} → ${result}`);
+        addLog(guild.id, 'عقوبة', client.user.id, user.id, `${action} → ${result}`);
         return result;
     } catch (e) {
         console.error('خطأ في العقوبة:', e);
@@ -249,7 +243,7 @@ client.once('ready', () => {
     client.user.setActivity('!اللوحة | /اللوحة', { type: 3 });
 });
 
-// ------------------ لوحة التحكم (معدلة لتجنب الأخطاء) ------------------
+// ------------------ دوال عرض اللوحات ------------------
 async function sendMainPanel(message) {
     const embed = new EmbedBuilder()
         .setTitle('🛡️ لوحة التحكم الشاملة')
@@ -515,15 +509,12 @@ async function sendEditPunishmentPanel(message, action) {
 client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) return;
     if (!interaction.guild) return;
-
-    // تجنب خطأ Unknown interaction
     if (!interaction.isRepliable()) return;
     
     try {
         const customId = interaction.customId;
         const guildId = interaction.guild.id;
 
-        // القائمة الرئيسية
         if (customId === 'menu_protection') {
             await interaction.deferUpdate().catch(() => {});
             const fakeMessage = { reply: async (data) => { await interaction.editReply(data).catch(() => {}); }, author: interaction.user, guild: interaction.guild };
@@ -567,7 +558,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             return;
         }
 
-        // التنقل بين صفحات الحماية
         if (customId.startsWith('protect_page_')) {
             const page = parseInt(customId.split('_')[2]);
             await interaction.deferUpdate().catch(() => {});
@@ -576,7 +566,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             return;
         }
 
-        // التنقل بين صفحات العقوبات
         if (customId.startsWith('punish_page_')) {
             const page = parseInt(customId.split('_')[2]);
             await interaction.deferUpdate().catch(() => {});
@@ -585,7 +574,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             return;
         }
 
-        // تفعيل/إطفاء الحماية
         if (customId.startsWith('protect_')) {
             const key = customId.replace('protect_', '');
             const settings = await getSettings(guildId);
@@ -599,7 +587,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             return;
         }
 
-        // إدارة رتب الاستثناء
         if (customId === 'exempt_add') {
             await interaction.reply({ content: '📝 **أرسل معرف الرتبة (ID) التي تريد إضافتها للاستثناء.**\nمثال: `123456789012345678`', ephemeral: true });
             const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
@@ -654,7 +641,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             return;
         }
 
-        // تعديل العقوبات
         if (customId.startsWith('punish_edit_')) {
             const action = customId.replace('punish_edit_', '');
             await interaction.deferUpdate().catch(() => {});
@@ -877,14 +863,14 @@ client.on('messageDelete', async (message) => {
             const p = await getPunishment(message.guild.id, 'ghost');
             if (p.enabled) {
                 await applyPunishment(message.guild, message.author, 'ghost', p);
-                await addLog(message.guild.id, 'شبح', client.user.id, message.author.id, 'حذف منشن');
+                addLog(message.guild.id, 'شبح', client.user.id, message.author.id, 'حذف منشن');
             }
         }
         ghostTracker.delete(message.id);
     }
 });
 
-// أحداث الحماية الإضافية (مختصرة)
+// أحداث إضافية (مختصرة)
 client.on('guildMemberAdd', async (member) => {
     const settings = await getSettings(member.guild.id);
     if (await isExempt(member.guild.id, member)) return;
@@ -900,7 +886,7 @@ client.on('guildMemberAdd', async (member) => {
             const recent = times.filter(t => now - t < 10000);
             if (recent.length >= p.threshold) {
                 await applyPunishment(member.guild, member.user, 'raid', p);
-                await addLog(member.guild.id, 'ريك', client.user.id, member.id, 'هجوم جماعي');
+                addLog(member.guild.id, 'ريك', client.user.id, member.id, 'هجوم جماعي');
                 return;
             }
         }
@@ -911,7 +897,7 @@ client.on('guildMemberAdd', async (member) => {
             const age = (Date.now() - member.user.createdAt.getTime()) / (1000 * 60 * 60 * 24);
             if (age < 7) {
                 await applyPunishment(member.guild, member.user, 'alt', p);
-                await addLog(member.guild.id, 'وهمي', client.user.id, member.id, 'حساب وهمي');
+                addLog(member.guild.id, 'وهمي', client.user.id, member.id, 'حساب وهمي');
             }
         }
     }
@@ -1065,7 +1051,4 @@ client.on('emojiDelete', async (emoji) => {
 });
 
 // ------------------ التشغيل ------------------
-(async () => {
-    await connectDB();
-    client.login(TOKEN);
-})();
+client.login(TOKEN);
