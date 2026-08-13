@@ -19,7 +19,6 @@ const client = new Client({
     partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
 });
 
-// جميع الحماية = false (طافية)
 let config = {
     protection: {
         anti_raid: false, anti_spam: false, anti_links: false, anti_bots: false,
@@ -39,7 +38,7 @@ let config = {
         removeroles: { enabled: true },
         timeout: { enabled: true, duration: 60 }
     },
-    exempt_roles: [],
+    exempt_roles: [], // هنا يتم تخزين معرفات الرتب المستثناة
     log_channel: null
 };
 
@@ -99,7 +98,36 @@ client.once('ready', () => {
     client.user.setActivity('!اللوحة | /اللوحة', { type: 3 });
 });
 
-async function sendPanel(message, page = 0) {
+// دالة عرض اللوحة الرئيسية
+async function sendMainPanel(message) {
+    const embed = new EmbedBuilder()
+        .setTitle('🛡️ لوحة التحكم الشاملة')
+        .setDescription('اختر القائمة المطلوبة من الأزرار أدناه:')
+        .setColor('#2b2d42')
+        .setFooter({ text: 'نظام الحماية المتكامل - بالعربي' })
+        .setTimestamp()
+        .addFields(
+            { name: '🛡️ الحماية', value: 'تشغيل وإطفاء أنظمة الحماية', inline: true },
+            { name: '⭐ رتب الاستثناء', value: 'إدارة الرتب المستثناة من الحماية', inline: true },
+            { name: '⚖️ العقوبات', value: 'تعديل إعدادات العقوبات', inline: true },
+            { name: '📋 السجل', value: 'عرض آخر الأحداث', inline: true },
+            { name: '🔄 التحذيرات', value: 'إعادة تعيين تحذيرات الأعضاء', inline: true }
+        );
+
+    const row = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('menu_protection').setLabel('🛡️ الحماية').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('menu_exempt').setLabel('⭐ رتب الاستثناء').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('menu_punishments').setLabel('⚖️ العقوبات').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('menu_logs').setLabel('📋 السجل').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('menu_reset_warns').setLabel('🔄 إعادة تعيين').setStyle(ButtonStyle.Danger)
+        );
+
+    await message.reply({ embeds: [embed], components: [row] });
+}
+
+// دالة عرض لوحة الحماية (مع الصفحات)
+async function sendProtectionPanel(message, page = 0) {
     const protectionKeys = Object.keys(config.protection);
     const itemsPerPage = 25;
     const totalPages = Math.ceil(protectionKeys.length / itemsPerPage);
@@ -109,7 +137,6 @@ async function sendPanel(message, page = 0) {
     const end = Math.min(start + itemsPerPage, protectionKeys.length);
     const currentKeys = protectionKeys.slice(start, end);
 
-    // أسماء عربية للحماية
     const arabicNames = {
         anti_raid: 'مكافحة الريك', anti_spam: 'مكافحة السبام', anti_links: 'مكافحة الروابط', anti_bots: 'مكافحة البوتات',
         anti_selfbot: 'مكافحة السيلف بوت', anti_webhook: 'مكافحة الويبهوك', anti_nick: 'حماية النك نيم', anti_channel_delete: 'حماية حذف الرومات',
@@ -123,10 +150,10 @@ async function sendPanel(message, page = 0) {
     };
 
     const embed = new EmbedBuilder()
-        .setTitle('🛡️ لوحة تحكم الحماية الشاملة')
+        .setTitle('🛡️ لوحة الحماية')
         .setDescription(`اضغط على الأزرار لتشغيل أو إطفاء الحماية.\n🟢 مفعل | 🔴 معطل\n📄 صفحة ${page + 1} من ${totalPages}`)
         .setColor('#2b2d42')
-        .setFooter({ text: 'نظام الحماية المتكامل - بالعربي' })
+        .setFooter({ text: 'اضغط 🔙 للعودة للقائمة الرئيسية' })
         .setTimestamp();
 
     let statusText = '';
@@ -160,23 +187,17 @@ async function sendPanel(message, page = 0) {
     const navRow = new ActionRowBuilder();
     if (page > 0) {
         navRow.addComponents(
-            new ButtonBuilder().setCustomId(`page_${page - 1}`).setLabel('◀ السابق').setStyle(ButtonStyle.Primary)
+            new ButtonBuilder().setCustomId(`protect_page_${page - 1}`).setLabel('◀ السابق').setStyle(ButtonStyle.Primary)
         );
     }
     if (page < totalPages - 1) {
         navRow.addComponents(
-            new ButtonBuilder().setCustomId(`page_${page + 1}`).setLabel('التالي ▶').setStyle(ButtonStyle.Primary)
+            new ButtonBuilder().setCustomId(`protect_page_${page + 1}`).setLabel('التالي ▶').setStyle(ButtonStyle.Primary)
         );
     }
-
-    const extraRow = new ActionRowBuilder();
-    if (page === 0) {
-        extraRow.addComponents(
-            new ButtonBuilder().setCustomId('logs').setLabel('📋 السجل').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('reset_warns').setLabel('🔄 إعادة تعيين التحذيرات').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId('refresh').setLabel('🔄 تحديث اللوحة').setStyle(ButtonStyle.Primary)
-        );
-    }
+    navRow.addComponents(
+        new ButtonBuilder().setCustomId('menu_back').setLabel('🔙 العودة للقائمة').setStyle(ButtonStyle.Secondary)
+    );
 
     const finalRows = [];
     let totalRows = 0;
@@ -190,28 +211,142 @@ async function sendPanel(message, page = 0) {
         finalRows.push(navRow);
         totalRows++;
     }
-    if (extraRow.components.length > 0 && totalRows < 5) {
-        finalRows.push(extraRow);
-        totalRows++;
-    }
 
     await message.reply({ embeds: [embed], components: finalRows });
 }
 
+// دالة عرض لوحة رتب الاستثناء
+async function sendExemptPanel(message) {
+    const embed = new EmbedBuilder()
+        .setTitle('⭐ رتب الاستثناء')
+        .setDescription('الأعضاء الذين لديهم هذه الرتب **لن تطبق عليهم** أي عقوبات.')
+        .setColor('#2b2d42')
+        .setFooter({ text: '🔙 للعودة للقائمة الرئيسية' })
+        .setTimestamp();
+
+    let exemptList = 'لا توجد رتب مستثناة';
+    if (config.exempt_roles.length > 0) {
+        const guild = message.guild;
+        const roleNames = config.exempt_roles.map(id => {
+            const role = guild.roles.cache.get(id);
+            return role ? `@${role.name}` : `❌ معرف غير موجود: ${id}`;
+        });
+        exemptList = roleNames.join('\n');
+    }
+    embed.addFields({ name: '📋 الرتب المستثناة حالياً', value: exemptList, inline: false });
+
+    const row1 = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('exempt_add').setLabel('➕ إضافة رتبة').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('exempt_remove').setLabel('➖ حذف رتبة').setStyle(ButtonStyle.Danger)
+        );
+    const row2 = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('menu_back').setLabel('🔙 العودة للقائمة').setStyle(ButtonStyle.Secondary)
+        );
+
+    await message.reply({ embeds: [embed], components: [row1, row2] });
+}
+
+// دالة عرض لوحة العقوبات
+async function sendPunishmentsPanel(message) {
+    const p = config.punishments;
+    const embed = new EmbedBuilder()
+        .setTitle('⚖️ إعدادات العقوبات')
+        .setDescription('اضغط على الأزرار لتعديل الإعدادات.')
+        .setColor('#2b2d42')
+        .setFooter({ text: '🔙 للعودة للقائمة الرئيسية' })
+        .setTimestamp()
+        .addFields(
+            { name: '📊 التحذير', value: `مفعل: ${p.warn.enabled ? '✅' : '❌'}\nالحد: ${p.warn.threshold} تحذيرات`, inline: true },
+            { name: '🔇 الكتم', value: `مفعل: ${p.mute.enabled ? '✅' : '❌'}\nالمدة: ${p.mute.duration} ثانية`, inline: true },
+            { name: '👢 الطرد', value: `مفعل: ${p.kick.enabled ? '✅' : '❌'}`, inline: true },
+            { name: '⛔ الحظر', value: `مفعل: ${p.ban.enabled ? '✅' : '❌'}\nأيام: ${p.ban.days}`, inline: true },
+            { name: '🎭 إزالة الرتب', value: `مفعل: ${p.removeroles.enabled ? '✅' : '❌'}`, inline: true },
+            { name: '⏱️ التوقيت', value: `مفعل: ${p.timeout.enabled ? '✅' : '❌'}\nالمدة: ${p.timeout.duration} ثانية`, inline: true }
+        );
+
+    const row1 = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('punish_warn_toggle').setLabel('🔄 تبديل التحذير').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('punish_mute_toggle').setLabel('🔄 تبديل الكتم').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('punish_kick_toggle').setLabel('🔄 تبديل الطرد').setStyle(ButtonStyle.Secondary)
+        );
+    const row2 = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('punish_ban_toggle').setLabel('🔄 تبديل الحظر').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('punish_removeroles_toggle').setLabel('🔄 تبديل إزالة الرتب').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('punish_timeout_toggle').setLabel('🔄 تبديل التوقيت').setStyle(ButtonStyle.Secondary)
+        );
+    const row3 = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('punish_warn_threshold').setLabel('⚙️ تعديل حد التحذير').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('punish_mute_duration').setLabel('⚙️ تعديل مدة الكتم').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('punish_timeout_duration').setLabel('⚙️ تعديل مدة التوقيت').setStyle(ButtonStyle.Primary)
+        );
+    const row4 = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('menu_back').setLabel('🔙 العودة للقائمة').setStyle(ButtonStyle.Secondary)
+        );
+
+    await message.reply({ embeds: [embed], components: [row1, row2, row3, row4] });
+}
+
+// معالجة الأزرار
 client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) return;
     if (!interaction.guild) return;
 
     const customId = interaction.customId;
 
-    if (customId.startsWith('page_')) {
-        const page = parseInt(customId.split('_')[1]);
+    // القائمة الرئيسية
+    if (customId === 'menu_protection') {
         await interaction.deferUpdate();
         const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        await sendPanel(fakeMessage, page);
+        await sendProtectionPanel(fakeMessage, 0);
+        return;
+    }
+    if (customId === 'menu_exempt') {
+        await interaction.deferUpdate();
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendExemptPanel(fakeMessage);
+        return;
+    }
+    if (customId === 'menu_punishments') {
+        await interaction.deferUpdate();
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendPunishmentsPanel(fakeMessage);
+        return;
+    }
+    if (customId === 'menu_logs') {
+        const logs = eventLog.slice(-20).reverse();
+        const logText = logs.map(l => `${new Date(l.time).toLocaleString('ar-EG')} | ${l.type} | ${l.detail}`).join('\n') || '📭 لا توجد أحداث';
+        const embed = new EmbedBuilder().setTitle('📋 سجل الأحداث').setDescription(`\`\`\`${logText}\`\`\``).setColor('#5865F2');
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+        return;
+    }
+    if (customId === 'menu_reset_warns') {
+        userWarns.clear();
+        await interaction.reply({ content: '✅ تم إعادة تعيين جميع التحذيرات.', ephemeral: true });
+        return;
+    }
+    if (customId === 'menu_back') {
+        await interaction.deferUpdate();
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendMainPanel(fakeMessage);
         return;
     }
 
+    // التنقل بين صفحات الحماية
+    if (customId.startsWith('protect_page_')) {
+        const page = parseInt(customId.split('_')[2]);
+        await interaction.deferUpdate();
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendProtectionPanel(fakeMessage, page);
+        return;
+    }
+
+    // تفعيل/إطفاء الحماية
     if (customId.startsWith('protect_')) {
         const key = customId.replace('protect_', '');
         if (config.protection.hasOwnProperty(key)) {
@@ -219,49 +354,167 @@ client.on(Events.InteractionCreate, async (interaction) => {
             saveConfig();
             await interaction.deferUpdate();
             const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-            const currentPage = panelPage[interaction.user.id] || 0;
-            await sendPanel(fakeMessage, currentPage);
+            await sendProtectionPanel(fakeMessage, 0);
         }
         return;
     }
 
-    if (customId === 'logs') {
-        const logs = eventLog.slice(-20).reverse();
-        const logText = logs.map(l => `${new Date(l.time).toLocaleString('ar-EG')} | ${l.type} | ${l.detail}`).join('\n') || '📭 لا توجد أحداث';
-        const embed = new EmbedBuilder().setTitle('📋 سجل الأحداث').setDescription(`\`\`\`${logText}\`\`\``).setColor('#5865F2');
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+    // إدارة رتب الاستثناء
+    if (customId === 'exempt_add') {
+        await interaction.reply({ content: '📝 **أرسل معرف الرتبة (ID) التي تريد إضافتها للاستثناء.**\nمثال: `123456789012345678`', ephemeral: true });
+        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+        if (collected.size === 0) {
+            await interaction.followUp({ content: '⏰ انتهى الوقت، حاول مرة أخرى.', ephemeral: true });
+            return;
+        }
+        const msg = collected.first();
+        const roleId = msg.content.trim();
+        const role = interaction.guild.roles.cache.get(roleId);
+        if (!role) {
+            await interaction.followUp({ content: '❌ معرف الرتبة غير صحيح، تأكد من الرقم.', ephemeral: true });
+            return;
+        }
+        if (!config.exempt_roles.includes(roleId)) {
+            config.exempt_roles.push(roleId);
+            saveConfig();
+            await interaction.followUp({ content: `✅ تم إضافة الرتبة **@${role.name}** إلى قائمة الاستثناء.`, ephemeral: true });
+        } else {
+            await interaction.followUp({ content: `⚠️ الرتبة **@${role.name}** موجودة بالفعل.`, ephemeral: true });
+        }
+        // تحديث اللوحة
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendExemptPanel(fakeMessage);
         return;
     }
 
-    if (customId === 'reset_warns') {
-        userWarns.clear();
-        await interaction.reply({ content: '✅ تم إعادة تعيين جميع التحذيرات.', ephemeral: true });
+    if (customId === 'exempt_remove') {
+        if (config.exempt_roles.length === 0) {
+            await interaction.reply({ content: '📭 لا توجد رتب مستثناة لحذفها.', ephemeral: true });
+            return;
+        }
+        const list = config.exempt_roles.map((id, i) => {
+            const role = interaction.guild.roles.cache.get(id);
+            return `${i + 1}. ${role ? `@${role.name}` : `❌ معرف غير موجود: ${id}`}`;
+        }).join('\n');
+        await interaction.reply({ content: `📝 **اختر رقم الرتبة لحذفها:**\n${list}\nأرسل الرقم (مثال: 1)`, ephemeral: true });
+        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+        if (collected.size === 0) {
+            await interaction.followUp({ content: '⏰ انتهى الوقت، حاول مرة أخرى.', ephemeral: true });
+            return;
+        }
+        const msg = collected.first();
+        const index = parseInt(msg.content.trim()) - 1;
+        if (isNaN(index) || index < 0 || index >= config.exempt_roles.length) {
+            await interaction.followUp({ content: '❌ رقم غير صحيح.', ephemeral: true });
+            return;
+        }
+        const removedId = config.exempt_roles.splice(index, 1)[0];
+        const role = interaction.guild.roles.cache.get(removedId);
+        saveConfig();
+        await interaction.followUp({ content: `✅ تم حذف الرتبة ${role ? `@${role.name}` : removedId} من قائمة الاستثناء.`, ephemeral: true });
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendExemptPanel(fakeMessage);
         return;
     }
 
-    if (customId === 'refresh') {
+    // تبديل العقوبات
+    const punishToggles = {
+        'punish_warn_toggle': 'warn',
+        'punish_mute_toggle': 'mute',
+        'punish_kick_toggle': 'kick',
+        'punish_ban_toggle': 'ban',
+        'punish_removeroles_toggle': 'removeroles',
+        'punish_timeout_toggle': 'timeout'
+    };
+    if (punishToggles[customId]) {
+        const key = punishToggles[customId];
+        config.punishments[key].enabled = !config.punishments[key].enabled;
+        saveConfig();
         await interaction.deferUpdate();
         const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
-        const currentPage = panelPage[interaction.user.id] || 0;
-        await sendPanel(fakeMessage, currentPage);
+        await sendPunishmentsPanel(fakeMessage);
+        return;
+    }
+
+    // تعديل إعدادات العقوبات
+    if (customId === 'punish_warn_threshold') {
+        await interaction.reply({ content: '📝 **أرسل عدد التحذيرات الجديد (رقم):**', ephemeral: true });
+        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+        if (collected.size === 0) {
+            await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+            return;
+        }
+        const val = parseInt(collected.first().content.trim());
+        if (isNaN(val) || val < 1) {
+            await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً أكبر من 0.', ephemeral: true });
+            return;
+        }
+        config.punishments.warn.threshold = val;
+        saveConfig();
+        await interaction.followUp({ content: `✅ تم تعيين حد التحذير إلى ${val}.`, ephemeral: true });
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendPunishmentsPanel(fakeMessage);
+        return;
+    }
+
+    if (customId === 'punish_mute_duration') {
+        await interaction.reply({ content: '📝 **أرسل مدة الكتم بالثواني (رقم):**', ephemeral: true });
+        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+        if (collected.size === 0) {
+            await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+            return;
+        }
+        const val = parseInt(collected.first().content.trim());
+        if (isNaN(val) || val < 1) {
+            await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً أكبر من 0.', ephemeral: true });
+            return;
+        }
+        config.punishments.mute.duration = val;
+        saveConfig();
+        await interaction.followUp({ content: `✅ تم تعيين مدة الكتم إلى ${val} ثانية.`, ephemeral: true });
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendPunishmentsPanel(fakeMessage);
+        return;
+    }
+
+    if (customId === 'punish_timeout_duration') {
+        await interaction.reply({ content: '📝 **أرسل مدة التوقيت بالثواني (رقم):**', ephemeral: true });
+        const filter = m => m.author.id === interaction.user.id && m.guild.id === interaction.guild.id;
+        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000 });
+        if (collected.size === 0) {
+            await interaction.followUp({ content: '⏰ انتهى الوقت.', ephemeral: true });
+            return;
+        }
+        const val = parseInt(collected.first().content.trim());
+        if (isNaN(val) || val < 1) {
+            await interaction.followUp({ content: '❌ أرسل رقماً صحيحاً أكبر من 0.', ephemeral: true });
+            return;
+        }
+        config.punishments.timeout.duration = val;
+        saveConfig();
+        await interaction.followUp({ content: `✅ تم تعيين مدة التوقيت إلى ${val} ثانية.`, ephemeral: true });
+        const fakeMessage = { reply: async (data) => { await interaction.editReply(data); }, author: interaction.user, guild: interaction.guild };
+        await sendPunishmentsPanel(fakeMessage);
         return;
     }
 });
 
-// ------- أحداث الحماية (كلها مشروطة بالتفعيل) -------
+// أحداث الحماية (نفسها، مع شرط isExempt)
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     if (isExempt(message.member)) return;
     const content = message.content.toLowerCase();
 
-    // أوامر فتح اللوحة
     if (content === '!اللوحة' || content === '/اللوحة' || content === '!panel' || content === '/panel' || content.includes('لوحة التحكم')) {
-        panelPage[message.author.id] = 0;
-        await sendPanel(message, 0);
+        await sendMainPanel(message);
         return;
     }
 
-    // الحماية تشتغل فقط إذا كانت مفعلة
+    // باقي الحماية بنفس الشروط...
     if (config.protection.anti_spam) {
         if (!spamTracker.has(message.author.id)) spamTracker.set(message.author.id, []);
         const times = spamTracker.get(message.author.id);
@@ -348,7 +601,7 @@ client.on('messageDelete', async (message) => {
     }
 });
 
-// أحداث إضافية
+// أحداث إضافية (القنوات، الرتب، إلخ)
 client.on('channelCreate', async (channel) => {
     if (!config.protection.anti_channel_create || !channel.guild) return;
     const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelCreate });
